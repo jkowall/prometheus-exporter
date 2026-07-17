@@ -139,12 +139,12 @@ func newSpaceliftCollector(ctx context.Context, httpClient *http.Client, session
 			nil,
 			nil),
 		messageQueueVisible: prometheus.NewDesc(
-			"spacelift_message_queue_visible",
+			"spacelift_message_queue_messages_visible",
 			"The number of visible messages ready to be received.",
 			[]string{"queue_name", "client_type"},
 			nil),
 		messageQueueInFlight: prometheus.NewDesc(
-			"spacelift_message_queue_in_flight",
+			"spacelift_message_queue_messages_in_flight",
 			"The number of in-flight messages received but not yet acked or deleted.",
 			[]string{"queue_name", "client_type"},
 			nil),
