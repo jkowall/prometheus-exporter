@@ -25,7 +25,7 @@ type spaceliftCollector struct {
 	publicParallelism                      *prometheus.Desc
 	workerPoolRunsPending                  *prometheus.Desc
 	workerPoolWorkersBusy                  *prometheus.Desc
-	workerPoolWorkers                      *prometheus.Desc
+	workerPoolWorkerCount                  *prometheus.Desc
 	workerPoolWorkersDrained               *prometheus.Desc
 	currentBillingPeriodStart              *prometheus.Desc
 	currentBillingPeriodEnd                *prometheus.Desc
@@ -77,7 +77,7 @@ func newSpaceliftCollector(ctx context.Context, httpClient *http.Client, session
 			"The number of currently busy workers in a worker pool",
 			[]string{"worker_pool_id", "worker_pool_name"},
 			nil),
-		workerPoolWorkers: prometheus.NewDesc(
+		workerPoolWorkerCount: prometheus.NewDesc(
 			"spacelift_worker_pool_workers",
 			"The number of workers in a worker pool",
 			[]string{"worker_pool_id", "worker_pool_name"},
@@ -156,6 +156,7 @@ func (c *spaceliftCollector) Describe(descriptorChannel chan<- *prometheus.Desc)
 	descriptorChannel <- c.publicParallelism
 	descriptorChannel <- c.workerPoolRunsPending
 	descriptorChannel <- c.workerPoolWorkersBusy
+	descriptorChannel <- c.workerPoolWorkerCount
 	descriptorChannel <- c.workerPoolWorkersDrained
 	descriptorChannel <- c.currentBillingPeriodStart
 	descriptorChannel <- c.currentBillingPeriodEnd
@@ -167,6 +168,7 @@ func (c *spaceliftCollector) Describe(descriptorChannel chan<- *prometheus.Desc)
 	descriptorChannel <- c.currentAvgStackSizeByResourceCount
 	descriptorChannel <- c.currentAverageRunDuration
 	descriptorChannel <- c.currentMedianRunDuration
+	descriptorChannel <- c.scrapeDuration
 	descriptorChannel <- c.buildInfo
 }
 
@@ -278,7 +280,7 @@ func (c *spaceliftCollector) Collect(metricChannel chan<- prometheus.Metric) {
 	for _, workerPool := range query.WorkerPools {
 		metricChannel <- prometheus.MustNewConstMetric(c.workerPoolRunsPending, prometheus.GaugeValue, float64(workerPool.PendingRuns), workerPool.ID, workerPool.Name)
 		metricChannel <- prometheus.MustNewConstMetric(c.workerPoolWorkersBusy, prometheus.GaugeValue, float64(workerPool.BusyWorkers), workerPool.ID, workerPool.Name)
-		metricChannel <- prometheus.MustNewConstMetric(c.workerPoolWorkers, prometheus.GaugeValue, float64(len(workerPool.Workers)), workerPool.ID, workerPool.Name)
+		metricChannel <- prometheus.MustNewConstMetric(c.workerPoolWorkerCount, prometheus.GaugeValue, float64(len(workerPool.Workers)), workerPool.ID, workerPool.Name)
 
 		drained := 0
 		for _, worker := range workerPool.Workers {
