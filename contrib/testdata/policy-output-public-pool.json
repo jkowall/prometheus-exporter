@@ -1,0 +1,38 @@
+[
+  {
+    "endpoint_id": "prom-hook",
+    "payload": {
+      "account": {
+        "name": "acme"
+      },
+      "run_updated": {
+        "policy_receipts": [],
+        "run": {
+          "changes": [],
+          "drift_detection": true,
+          "id": "01HQZXC1B2C3D4E5F6G7H8J9K0",
+          "state": "FAILED",
+          "type": "PROPOSED"
+        },
+        "stack": {
+          "id": "acme-sandbox",
+          "name": "Sandbox",
+          "space": {
+            "id": "root",
+            "name": "root"
+          }
+        },
+        "timing": [
+          {
+            "duration": 42000000000,
+            "state": "QUEUED"
+          },
+          {
+            "duration": 90000000000,
+            "state": "PLANNING"
+          }
+        ]
+      }
+    }
+  }
+]

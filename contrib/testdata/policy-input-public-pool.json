@@ -1,0 +1,68 @@
+{
+  "account": {
+    "name": "acme"
+  },
+  "webhook_endpoints": [
+    {
+      "id": "prom-hook",
+      "labels": [
+        "prometheus"
+      ]
+    },
+    {
+      "id": "slack-hook",
+      "labels": [
+        "slack"
+      ]
+    }
+  ],
+  "run_updated": {
+    "run": {
+      "id": "01HQZXC1B2C3D4E5F6G7H8J9K0",
+      "state": "FAILED",
+      "type": "PROPOSED",
+      "drift_detection": true,
+      "commit": {
+        "author": "jane",
+        "branch": "main",
+        "hash": "abc123",
+        "message": "secret stuff"
+      },
+      "creator_session": {
+        "login": "jane",
+        "creator_ip": "10.0.0.1"
+      },
+      "runtime_config": {
+        "environment": {
+          "TF_TOKEN": "supersecret"
+        }
+      },
+      "changes": []
+    },
+    "stack": {
+      "id": "acme-sandbox",
+      "name": "Sandbox",
+      "space": {
+        "id": "root",
+        "name": "root"
+      },
+      "tracked_commit": {
+        "message": "also secret"
+      }
+    },
+    "timing": [
+      {
+        "state": "QUEUED",
+        "duration": 42000000000
+      },
+      {
+        "state": "PLANNING",
+        "duration": 90000000000
+      }
+    ],
+    "policy_receipts": [],
+    "urls": {
+      "run": "https://acme.app.spacelift.io/..."
+    }
+  }
+}

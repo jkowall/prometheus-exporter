@@ -1,0 +1,45 @@
+{
+  "account": { "name": "acme" },
+  "run_updated": {
+    "run": {
+      "id": "01HQZXC1B2C3D4E5F6G7H8J9K0",
+      "state": "FINISHED",
+      "type": "TRACKED",
+      "drift_detection": false,
+      "created_at": 1753000000000000000,
+      "updated_at": 1753000187000000000,
+      "changes": [
+        { "action": "added", "phase": "plan", "entity": { "address": "aws_s3_bucket.a" } },
+        { "action": "added", "phase": "plan", "entity": { "address": "aws_s3_bucket.b" } },
+        { "action": "changed", "phase": "plan", "entity": { "address": "aws_iam_role.r" } },
+        { "action": "deleted", "phase": "plan", "entity": { "address": "aws_sqs_queue.q" } },
+        { "action": "create-Before-destroy-replaced", "phase": "plan", "entity": { "address": "aws_instance.i" } },
+        { "action": "destroy-Before-create-replaced", "phase": "plan", "entity": { "address": "aws_instance.j" } },
+        { "action": "import", "phase": "plan", "entity": { "address": "aws_vpc.v" } },
+        { "action": "added", "phase": "apply", "entity": { "address": "aws_s3_bucket.a" } }
+      ]
+    },
+    "stack": {
+      "id": "acme-production-network",
+      "name": "Production network",
+      "state": "FINISHED",
+      "terraform_version": "1.9.5",
+      "labels": ["team:platform"],
+      "space": { "id": "production", "name": "Production" },
+      "worker_pool": { "id": "01HQZX9K7P2M3N4Q5R6S7T8U9V", "name": "production" }
+    },
+    "timing": [
+      { "state": "QUEUED", "duration": 42000000000 },
+      { "state": "PREPARING", "duration": 5000000000 },
+      { "state": "INITIALIZING", "duration": 18000000000 },
+      { "state": "PLANNING", "duration": 90000000000 },
+      { "state": "UNCONFIRMED", "duration": 12000000000 },
+      { "state": "APPLYING", "duration": 20000000000 }
+    ],
+    "policy_receipts": [
+      { "name": "no-public-buckets", "type": "PLAN", "outcome": "allow" },
+      { "name": "require-approval", "type": "APPROVAL", "outcome": "approve" }
+    ],
+    "urls": { "run": "https://acme.app.spacelift.io/stack/acme-production-network/run/01HQZXC1B2C3D4E5F6G7H8J9K0" }
+  }
+}

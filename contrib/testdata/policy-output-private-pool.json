@@ -1,0 +1,61 @@
+[
+  {
+    "endpoint_id": "prom-hook",
+    "payload": {
+      "account": {
+        "name": "acme"
+      },
+      "run_updated": {
+        "policy_receipts": [
+          {
+            "name": "no-public-buckets",
+            "outcome": "allow",
+            "type": "PLAN"
+          }
+        ],
+        "run": {
+          "changes": [
+            {
+              "action": "added",
+              "phase": "plan"
+            },
+            {
+              "action": "create-Before-destroy-replaced",
+              "phase": "plan"
+            },
+            {
+              "action": "added",
+              "phase": "apply"
+            }
+          ],
+          "drift_detection": false,
+          "id": "01HQZXC1B2C3D4E5F6G7H8J9K0",
+          "state": "FINISHED",
+          "type": "TRACKED"
+        },
+        "stack": {
+          "id": "acme-production-network",
+          "name": "Production network",
+          "space": {
+            "id": "production",
+            "name": "Production"
+          },
+          "worker_pool": {
+            "id": "01HQZX9K7P2M3N4Q5R6S7T8U9V",
+            "name": "production"
+          }
+        },
+        "timing": [
+          {
+            "duration": 42000000000,
+            "state": "QUEUED"
+          },
+          {
+            "duration": 90000000000,
+            "state": "PLANNING"
+          }
+        ]
+      }
+    }
+  }
+]

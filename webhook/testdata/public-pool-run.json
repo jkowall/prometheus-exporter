@@ -1,0 +1,22 @@
+{
+  "account": { "name": "acme" },
+  "run_updated": {
+    "run": {
+      "id": "01HQZXD1B2C3D4E5F6G7H8J9K0",
+      "state": "FAILED",
+      "type": "PROPOSED",
+      "drift_detection": true,
+      "changes": []
+    },
+    "stack": {
+      "id": "acme-sandbox",
+      "name": "Sandbox",
+      "space": { "id": "root", "name": "root" }
+    },
+    "timing": [
+      { "state": "QUEUED", "duration": 3000000000 },
+      { "state": "PLANNING", "duration": 27000000000 }
+    ],
+    "policy_receipts": []
+  }
+}

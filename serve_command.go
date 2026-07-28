@@ -20,6 +20,7 @@ import (
 
 	"github.com/spacelift-io/prometheus-exporter/client/session"
 	"github.com/spacelift-io/prometheus-exporter/logging"
+	"github.com/spacelift-io/prometheus-exporter/webhook"
 )
 
 var (
@@ -98,6 +99,51 @@ var (
 		Value:       time.Second * 5,
 		Destination: &scrapeTimeout,
 	}
+
+	webhookEnabled     bool
+	flagWebhookEnabled = &cli.BoolFlag{
+		Name: "webhook-enabled",
+		Usage: "Accept Spacelift notification policy deliveries and expose run metrics derived from them. " +
+			"Requires --webhook-secret or --webhook-secret-file",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_WEBHOOK_ENABLED"),
+		Destination: &webhookEnabled,
+	}
+
+	webhookPath     string
+	flagWebhookPath = &cli.StringFlag{
+		Name:        "webhook-path",
+		Usage:       "The path the webhook receiver listens on",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_WEBHOOK_PATH"),
+		Value:       "/webhook",
+		Destination: &webhookPath,
+	}
+
+	webhookSecret     string
+	flagWebhookSecret = &cli.StringFlag{
+		Name: "webhook-secret",
+		Usage: "The secret configured on the Spacelift named webhook, used to verify the " +
+			"X-Signature-256 header. Mutually exclusive with --webhook-secret-file",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_WEBHOOK_SECRET"),
+		Destination: &webhookSecret,
+	}
+
+	webhookSecretFile     string
+	flagWebhookSecretFile = &cli.StringFlag{
+		Name: "webhook-secret-file",
+		Usage: "Path to a file containing the Spacelift named webhook secret. " +
+			"Mutually exclusive with --webhook-secret",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_WEBHOOK_SECRET_FILE"),
+		Destination: &webhookSecretFile,
+	}
+
+	webhookBuckets     []float64
+	flagWebhookBuckets = &cli.FloatSliceFlag{
+		Name: "webhook-duration-buckets",
+		Usage: "Histogram buckets for spacelift_run_duration_seconds, in seconds. " +
+			"Defaults to buckets spanning 10s to 2h, because the Prometheus defaults stop at 10s",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_WEBHOOK_DURATION_BUCKETS"),
+		Destination: &webhookBuckets,
+	}
 )
 
 var serveCommand *cli.Command = &cli.Command{
@@ -110,6 +156,9 @@ var serveCommand *cli.Command = &cli.Command{
 		flagAPIKeyID,
 		flagIsDevelopment,
 		flagScrapeTimeout,
+		flagWebhookEnabled,
+		flagWebhookPath,
+		flagWebhookBuckets,
 	},
 	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
 		{
@@ -117,6 +166,12 @@ var serveCommand *cli.Command = &cli.Command{
 			Flags: [][]cli.Flag{
 				{flagAPIKeySecret},
 				{flagAPIKeySecretFile},
+			},
+		},
+		{
+			Flags: [][]cli.Flag{
+				{flagWebhookSecret},
+				{flagWebhookSecretFile},
 			},
 		},
 	},
@@ -176,6 +231,21 @@ var serveCommand *cli.Command = &cli.Command{
 			return cli.Exit(fmt.Sprintf("could not create Spacelift collector: %v", err), ExitCodeStartupError)
 		}
 		reg.MustRegister(collector)
+
+		if webhookEnabled {
+			secret, err := resolveWebhookSecret(webhookSecret, webhookSecretFile)
+			if err != nil {
+				return cli.Exit(err.Error(), ExitCodeStartupError)
+			}
+
+			handler, err := webhook.NewHandler(ctx, webhook.NewMetrics(reg, webhookBuckets), secret)
+			if err != nil {
+				return cli.Exit(fmt.Sprintf("could not configure the webhook receiver: %v", err), ExitCodeStartupError)
+			}
+
+			http.Handle(webhookPath, handler)
+			logger.Infow("Webhook receiver enabled", "path", webhookPath)
+		}
 
 		// Expose the registered metrics via HTTP.
 		http.Handle("/metrics", promhttp.HandlerFor(
@@ -269,6 +339,23 @@ func buildSecretProvider(secret, secretFile string) (session.SecretProvider, err
 		return func() (string, error) { return readSecretFile(path) }, nil
 	default:
 		return session.StaticSecret(secret), nil
+	}
+}
+
+// resolveWebhookSecret returns the named-webhook secret from whichever of the
+// two inputs was supplied. Unlike the API key secret, this one is read once at
+// startup: rotating it means rotating it on the Spacelift webhook too, which is
+// not something we can pick up mid-flight.
+func resolveWebhookSecret(secret, secretFile string) (string, error) {
+	switch {
+	case secret != "" && secretFile != "":
+		return "", errors.New("--webhook-secret and --webhook-secret-file are mutually exclusive")
+	case secretFile != "":
+		return readSecretFile(filepath.Clean(secretFile))
+	case secret != "":
+		return secret, nil
+	default:
+		return "", errors.New("--webhook-enabled requires one of --webhook-secret or --webhook-secret-file")
 	}
 }
 

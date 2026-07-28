@@ -200,6 +200,117 @@ The following metrics are provided by the exporter:
 | `spacelift_scrape_duration_seconds`                        |                                      | The duration in seconds of the request to the Spacelift API for metrics                        |
 | `spacelift_build_info`                                     |                                      | Contains build information about the exporter (version, commit, etc)                           |
 
+## Run metrics
+
+The metrics above are point-in-time gauges read from the Spacelift API when
+Prometheus scrapes. They cannot describe individual runs: the underlying API
+fields are account-wide aggregates, so they carry no stack or space identity.
+
+To get per-run metrics, the exporter can additionally receive
+[notification policy](https://docs.spacelift.io/concepts/policy/notification-policy)
+deliveries. Spacelift calls the exporter once per run that reaches a terminal
+state, and the exporter turns each delivery into counters and a histogram. This
+is the same mechanism the
+[Datadog integration](https://docs.spacelift.io/integrations/observability/datadog)
+uses, and it costs the Spacelift API nothing, because nothing is polled.
+
+This is off by default. To enable it:
+
+```bash
+spacelift-promex serve \
+  --api-endpoint https://myaccount.app.spacelift.io \
+  --api-key-id "$SPACELIFT_API_KEY_ID" \
+  --api-key-secret "$SPACELIFT_API_KEY_SECRET" \
+  --webhook-enabled \
+  --webhook-secret-file /run/secrets/promex-webhook-secret
+```
+
+Then create the notification policy and the webhook pointing at
+`https://<exporter>/webhook`. There is a Terraform module in
+[`contrib/terraform`](contrib/terraform) that creates both, or you can apply
+[`contrib/notification-policy.rego`](contrib/notification-policy.rego) by hand
+and label the webhook `prometheus`.
+
+The webhook secret configured in Spacelift must match the exporter's
+`--webhook-secret` / `--webhook-secret-file`. Every delivery is authenticated by
+verifying the `X-Signature-256` HMAC over the request body, and unsigned or
+mis-signed deliveries are rejected with a 401. The exporter refuses to start
+with the receiver enabled but no secret set, because an unauthenticated endpoint
+would let anyone who can reach it inject arbitrary run metrics.
+
+| Metric                                              | Labels                                                                        | Description                                                                          |
+| --------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `spacelift_runs_total`                              | `space`, `stack`, `run_type`, `final_state`, `drift_detection`, `worker_pool`  | Runs that reached a terminal state                                                   |
+| `spacelift_run_duration_seconds`                    | `space`, `stack`, `run_type`                                                   | End-to-end run duration, as the sum of time spent in every run state                 |
+| `spacelift_run_resource_changes_total`              | `space`, `stack`, `run_type`, `change_type`                                    | Plan-phase resource changes, by `added` / `changed` / `deleted` / `replaced`          |
+| `spacelift_run_policy_evaluations_total`            | `space`, `stack`, `policy_type`, `policy_outcome`                              | Policy evaluations recorded against terminated runs                                  |
+| `spacelift_webhook_deliveries_total`                | `result`                                                                      | Deliveries received, by outcome: `accepted`, `bad_signature`, `malformed`, `ignored`  |
+| `spacelift_webhook_last_delivery_timestamp_seconds` |                                                                               | When the last delivery was accepted; alert on this going stale                        |
+| `spacelift_webhook_payload_errors_total`            |                                                                               | Deliveries that could not be decoded                                                 |
+
+### Things to know before relying on these
+
+**Only terminated runs are reported.** A delivery is made when a run reaches
+`FAILED`, `FINISHED`, `DISCARDED` or `STOPPED`. `CANCELED` is excluded, matching
+the Datadog integration: a run that was created and cancelled never did any
+work. In-flight runs produce nothing, so these metrics describe throughput and
+outcomes, not what is happening right now.
+
+**Notification policies require the Cloud tier or above.**
+
+**Counters reset when the exporter restarts.** That is normal for a Prometheus
+counter and `rate()` / `increase()` handle it. Do not build on the raw value.
+
+**With more than one replica, each instance only sees its own deliveries.**
+Whichever replica the load balancer picked gets the delivery, so aggregate
+across instances with `sum without (instance) (...)` rather than reading one.
+The simplest deployment is a single replica.
+
+**Observations are timestamped on arrival.** Datadog back-dates its points to
+the run's terminal timestamp; Prometheus cannot, so a run appears in the scrape
+interval in which the delivery landed rather than when the run finished.
+
+**Per-phase timing is not here.** `spacelift_run_duration_seconds` is
+end-to-end. Spacelift emits OpenTelemetry spans for run internals, and those
+carry sub-phase detail that state timings cannot express, such as how much of a
+plan was provider downloads. Use the trace export for phase-level questions, and
+the OpenTelemetry Collector's `spanmetrics` connector if you want histograms
+from it in Prometheus.
+
+**Cardinality is a function of your account.** Every distinct
+`(space, stack, run_type, final_state, drift_detection, worker_pool)` is one
+series, and the histogram multiplies `(space, stack, run_type)` by the number of
+buckets plus two. An account with 2,000 active stacks should expect on the order
+of tens of thousands of series. If that is too many, drop the `stack` label at
+scrape time with a `metric_relabel_configs` rule.
+
+The default histogram buckets span 10s to 2h, because the client library's
+defaults stop at 10s and every IaC run would otherwise land in one bucket.
+Override them with `--webhook-duration-buckets`.
+
+### Example queries
+
+```promql
+# Run failure ratio per stack over the last hour.
+sum by (stack) (rate(spacelift_runs_total{final_state="FAILED"}[1h]))
+  / sum by (stack) (rate(spacelift_runs_total[1h]))
+
+# 95th percentile run duration per stack over the last day.
+histogram_quantile(
+  0.95,
+  sum by (stack, le) (rate(spacelift_run_duration_seconds_bucket[1d]))
+)
+
+# Resources destroyed per hour, which is worth alerting on.
+sum(rate(spacelift_run_resource_changes_total{change_type="deleted"}[1h]))
+
+# Deliveries are being rejected, so the secret no longer matches.
+rate(spacelift_webhook_deliveries_total{result="bad_signature"}[5m]) > 0
+
+# No delivery in six hours, so the policy or the webhook is broken.
+time() - spacelift_webhook_last_delivery_timestamp_seconds > 6 * 3600
+```
+
 ## Example Dashboard
 
 If you're looking for inspiration, you can find an example Grafana dashboard

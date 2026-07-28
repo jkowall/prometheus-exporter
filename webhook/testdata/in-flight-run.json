@@ -1,0 +1,19 @@
+{
+  "account": { "name": "acme" },
+  "run_updated": {
+    "run": {
+      "id": "01HQZXE1B2C3D4E5F6G7H8J9K0",
+      "state": "PLANNING",
+      "type": "TRACKED",
+      "drift_detection": false,
+      "changes": []
+    },
+    "stack": {
+      "id": "acme-production-network",
+      "name": "Production network",
+      "space": { "id": "production", "name": "Production" }
+    },
+    "timing": [{ "state": "QUEUED", "duration": 9000000000 }],
+    "policy_receipts": []
+  }
+}

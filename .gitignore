@@ -6,3 +6,9 @@ dist/
 # Ignore GPG public keys produced during release process, otherwise goreleaser fails because
 # the git state is dirty.
 key.*
+
+# Working directories left behind by validating contrib/terraform. The lock file
+# is deliberately not committed: this is a reusable module, so the provider
+# version is resolved by the caller.
+.terraform/
+.terraform.lock.hcl

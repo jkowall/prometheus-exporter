@@ -1,0 +1,103 @@
+{
+  "account": {
+    "name": "acme"
+  },
+  "webhook_endpoints": [
+    {
+      "id": "prom-hook",
+      "labels": [
+        "prometheus"
+      ]
+    },
+    {
+      "id": "slack-hook",
+      "labels": [
+        "slack"
+      ]
+    }
+  ],
+  "run_updated": {
+    "run": {
+      "id": "01HQZXC1B2C3D4E5F6G7H8J9K0",
+      "state": "PLANNING",
+      "type": "TRACKED",
+      "drift_detection": false,
+      "commit": {
+        "author": "jane",
+        "branch": "main",
+        "hash": "abc123",
+        "message": "secret stuff"
+      },
+      "creator_session": {
+        "login": "jane",
+        "creator_ip": "10.0.0.1"
+      },
+      "runtime_config": {
+        "environment": {
+          "TF_TOKEN": "supersecret"
+        }
+      },
+      "changes": [
+        {
+          "action": "added",
+          "phase": "plan",
+          "entity": {
+            "address": "aws_s3_bucket.a"
+          }
+        },
+        {
+          "action": "create-Before-destroy-replaced",
+          "phase": "plan",
+          "entity": {
+            "address": "aws_instance.i"
+          }
+        },
+        {
+          "action": "added",
+          "phase": "apply",
+          "entity": {
+            "address": "aws_s3_bucket.a"
+          }
+        }
+      ]
+    },
+    "stack": {
+      "id": "acme-production-network",
+      "name": "Production network",
+      "space": {
+        "id": "production",
+        "name": "Production"
+      },
+      "worker_pool": {
+        "id": "01HQZX9K7P2M3N4Q5R6S7T8U9V",
+        "name": "production"
+      },
+      "tracked_commit": {
+        "message": "also secret"
+      }
+    },
+    "timing": [
+      {
+        "state": "QUEUED",
+        "duration": 42000000000
+      },
+      {
+        "state": "PLANNING",
+        "duration": 90000000000
+      }
+    ],
+    "policy_receipts": [
+      {
+        "name": "no-public-buckets",
+        "type": "PLAN",
+        "outcome": "allow",
+        "flags": [
+          "some-flag"
+        ]
+      }
+    ],
+    "urls": {
+      "run": "https://acme.app.spacelift.io/..."
+    }
+  }
+}

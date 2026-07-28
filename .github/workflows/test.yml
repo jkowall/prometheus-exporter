@@ -27,3 +27,33 @@ jobs:
             echo "::error::testdata/golden is stale. Run 'go test . -update-golden' and commit the result."
             exit 1
           fi
+
+  policy:
+    name: Verify the notification policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+
+      - name: Install Open Policy Agent
+        run: go install github.com/open-policy-agent/opa@latest
+
+      - name: Check the policy compiles
+        run: opa check --strict contrib/notification-policy.rego
+
+      # The Go receiver is tested against committed fixtures of the policy's
+      # output. Regenerating them here is what stops the Rego and the Go structs
+      # from drifting apart: editing one without the other fails this step.
+      - name: Check the policy output fixtures are up to date
+        run: ./contrib/generate-fixtures.sh
+      - name: Fail if the fixtures changed
+        run: |
+          if ! git diff --exit-code -- contrib/testdata; then
+            echo "::error::contrib/testdata is stale. Run ./contrib/generate-fixtures.sh and commit the result."
+            exit 1
+          fi
