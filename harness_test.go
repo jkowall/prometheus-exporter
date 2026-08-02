@@ -59,6 +59,11 @@ type graphqlStub struct {
 	// response is written verbatim as the HTTP body.
 	response string
 
+	// overrides maps a GraphQL operation name to a response that replaces
+	// the default, so a test can fail one collector and leave the rest
+	// healthy.
+	overrides map[string]string
+
 	// queries holds the raw "query" string of every request received.
 	queries []string
 
@@ -66,6 +71,115 @@ type graphqlStub struct {
 	// metadata that are not present in the rendered query string.
 	operationNames       []string
 	authorizationHeaders []string
+}
+
+// failOperation makes the named operation return the given body, leaving every
+// other collector working. This is how isolation is tested: without per-domain
+// queries there would be no way to fail one and not the others.
+func (s *graphqlStub) failOperation(operation, response string) {
+	if s.overrides == nil {
+		s.overrides = map[string]string{}
+	}
+
+	s.overrides[operation] = response
+}
+
+// operationOf extracts the operation name from a query document, which the
+// stub uses to pick a response.
+func operationOf(query string) string {
+	name, _, _ := strings.Cut(strings.TrimPrefix(query, "query "), "{")
+
+	return strings.TrimSpace(name)
+}
+
+// topLevelFields returns the root selections of a query document, e.g.
+// ["publicWorkerPool"] for `query X{publicWorkerPool{busyWorkers}}`.
+func topLevelFields(query string) []string {
+	_, body, found := strings.Cut(query, "{")
+	if !found {
+		return nil
+	}
+
+	var fields []string
+	var current strings.Builder
+	depth := 0
+
+	for _, r := range body {
+		switch {
+		case r == '{':
+			depth++
+			if depth == 1 {
+				// Everything accumulated so far names the
+				// field whose selection set just opened.
+				fields = appendField(fields, current.String())
+				current.Reset()
+			}
+		case r == '}':
+			depth--
+			if depth < 0 {
+				// Closing brace of the operation itself.
+				return appendField(fields, current.String())
+			}
+		case depth == 0 && r == ',':
+			fields = appendField(fields, current.String())
+			current.Reset()
+		case depth == 0:
+			current.WriteRune(r)
+		}
+	}
+
+	return appendField(fields, current.String())
+}
+
+func appendField(fields []string, name string) []string {
+	// Strip any argument list, e.g. recentStacks(states: [...]).
+	name, _, _ = strings.Cut(name, "(")
+	if name = strings.TrimSpace(name); name != "" {
+		fields = append(fields, name)
+	}
+
+	return fields
+}
+
+// projectFixture narrows a whole-account fixture to the fields one collector
+// asked for.
+//
+// Fixtures describe an account, not a query, which is what makes them readable
+// and lets one file cover every collector. But the GraphQL decoder rejects any
+// response field the query did not select, so the stub has to do the narrowing
+// that a real server does.
+func projectFixture(t *testing.T, response string, fields []string) string {
+	t.Helper()
+
+	var envelope struct {
+		Data   map[string]json.RawMessage `json:"data"`
+		Errors json.RawMessage            `json:"errors,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(response), &envelope); err != nil {
+		// Not a well-formed envelope: a test is asserting on a
+		// malformed response, so pass it through untouched.
+		return response
+	}
+
+	if envelope.Errors != nil {
+		return response
+	}
+
+	projected := make(map[string]json.RawMessage, len(fields))
+	for _, field := range fields {
+		if value, ok := envelope.Data[field]; ok {
+			projected[field] = value
+		}
+	}
+
+	out, err := json.Marshal(struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}{Data: projected})
+	if err != nil {
+		t.Fatalf("re-marshalling projected fixture: %v", err)
+	}
+
+	return string(out)
 }
 
 func newGraphQLStub(t *testing.T, response string) *graphqlStub {
@@ -92,39 +206,47 @@ func newGraphQLStub(t *testing.T, response string) *graphqlStub {
 		stub.operationNames = append(stub.operationNames, envelope.OperationName)
 		stub.authorizationHeaders = append(stub.authorizationHeaders, r.Header.Get("Authorization"))
 
+		response := stub.response
+		if override, ok := stub.overrides[operationOf(envelope.Query)]; ok {
+			response = override
+		} else {
+			response = projectFixture(t, response, topLevelFields(envelope.Query))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, stub.response)
+		_, _ = io.WriteString(w, response)
 	}))
 	t.Cleanup(stub.server.Close)
 
 	return stub
 }
 
-// collector builds a real spaceliftCollector wired to the stub.
+// collector builds a real exporter over the default collector set, wired to
+// the stub.
 func (s *graphqlStub) collector(t *testing.T) prometheus.Collector {
 	t.Helper()
 
-	ctx := logging.Init(context.Background(), true)
-	collector, err := newSpaceliftCollector(ctx, s.server.Client(), &fakeSession{endpoint: s.server.URL}, 5*time.Second)
-	if err != nil {
-		t.Fatalf("newSpaceliftCollector: %v", err)
-	}
-
-	return collector
+	return collectorWithSession(t, s, &fakeSession{endpoint: s.server.URL})
 }
 
-// collectorWithSession builds a collector against an explicit session, so
+// collectorWithSession builds an exporter against an explicit session, so
 // tests can observe token refreshes.
 func collectorWithSession(t *testing.T, stub *graphqlStub, session *fakeSession) prometheus.Collector {
 	t.Helper()
 
 	ctx := logging.Init(context.Background(), true)
-	collector, err := newSpaceliftCollector(ctx, stub.server.Client(), session, 5*time.Second)
+
+	collectors, err := newCollectors(nil)
 	if err != nil {
-		t.Fatalf("newSpaceliftCollector: %v", err)
+		t.Fatalf("newCollectors: %v", err)
 	}
 
-	return collector
+	exporter, err := newExporter(ctx, stub.server.Client(), session, 5*time.Second, collectors)
+	if err != nil {
+		t.Fatalf("newExporter: %v", err)
+	}
+
+	return exporter
 }
 
 var descFQName = regexp.MustCompile(`fqName: "([^"]+)"`)
@@ -185,15 +307,19 @@ var (
 	// golden files would churn on every Go upgrade.
 	goversionLabel = regexp.MustCompile(`goversion="[^"]*"`)
 
-	// Scrape duration is wall-clock and differs on every run.
+	// Scrape durations are wall-clock and differ on every run.
 	scrapeDurationValue = regexp.MustCompile(`(?m)^(spacelift_scrape_duration_seconds) .*$`)
+
+	collectorDurationValue = regexp.MustCompile(
+		`(?m)^(spacelift_scrape_collector_duration_seconds\{[^}]*\}) .*$`)
 )
 
-// sanitize replaces the two values that legitimately vary between runs, so a
-// golden diff only ever reflects a real change to the metric surface.
+// sanitize replaces the values that legitimately vary between runs, so a golden
+// diff only ever reflects a real change to the metric surface.
 func sanitize(in string) string {
 	out := goversionLabel.ReplaceAllString(in, `goversion="<goversion>"`)
 	out = scrapeDurationValue.ReplaceAllString(out, `$1 <duration>`)
+	out = collectorDurationValue.ReplaceAllString(out, `$1 <duration>`)
 
 	return out
 }

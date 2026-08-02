@@ -98,7 +98,44 @@ var (
 		Value:       time.Second * 5,
 		Destination: &scrapeTimeout,
 	}
+
+	enabledCollectors     []string
+	flagEnabledCollectors = &cli.StringSliceFlag{
+		Name: "collector",
+		Usage: "Enable or disable an individual collector, e.g. --collector=messagequeue or " +
+			"--collector=no-usage. Repeatable. Collectors not named keep their default: " +
+			"publicworkerpool, workerpools, usage and aggregates are on, messagequeue " +
+			"(Self-Hosted only) is off",
+		Sources:     cli.EnvVars("SPACELIFT_PROMEX_COLLECTORS"),
+		Destination: &enabledCollectors,
+	}
 )
+
+// parseCollectorFlags turns the repeatable --collector values into an
+// explicit on/off map. "name" enables, "no-name" disables.
+func parseCollectorFlags(values []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(values))
+
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			continue
+		}
+
+		on := true
+		if strings.HasPrefix(name, "no-") {
+			on, name = false, strings.TrimPrefix(name, "no-")
+		}
+
+		if previous, seen := out[name]; seen && previous != on {
+			return nil, fmt.Errorf("collector %q is both enabled and disabled", name)
+		}
+
+		out[name] = on
+	}
+
+	return out, nil
+}
 
 var serveCommand *cli.Command = &cli.Command{
 	Name:  "serve",
@@ -110,6 +147,7 @@ var serveCommand *cli.Command = &cli.Command{
 		flagAPIKeyID,
 		flagIsDevelopment,
 		flagScrapeTimeout,
+		flagEnabledCollectors,
 	},
 	MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
 		{
@@ -171,11 +209,33 @@ var serveCommand *cli.Command = &cli.Command{
 		// Create a new registry.
 		reg := prometheus.NewRegistry()
 
-		collector, err := newSpaceliftCollector(ctx, httpClient, session, scrapeTimeout)
+		requested, err := parseCollectorFlags(enabledCollectors)
+		if err != nil {
+			return cli.Exit(err.Error(), ExitCodeStartupError)
+		}
+
+		collectors, err := newCollectors(requested)
+		if err != nil {
+			return cli.Exit(err.Error(), ExitCodeStartupError)
+		}
+
+		if len(collectors) == 0 {
+			return cli.Exit("every collector is disabled, so there would be nothing to export", ExitCodeStartupError)
+		}
+
+		exporter, err := newExporter(ctx, httpClient, session, scrapeTimeout, collectors)
 		if err != nil {
 			return cli.Exit(fmt.Sprintf("could not create Spacelift collector: %v", err), ExitCodeStartupError)
 		}
-		reg.MustRegister(collector)
+		reg.MustRegister(exporter)
+
+		names := make([]string, 0, len(collectors))
+		for _, c := range collectors {
+			names = append(names, c.Name())
+		}
+		logger.Infow("Collectors enabled", "collectors", strings.Join(names, ", "))
+
+		warnIfMachineKey(ctx, httpClient, session, logger, collectors)
 
 		// Expose the registered metrics via HTTP.
 		http.Handle("/metrics", promhttp.HandlerFor(
@@ -183,6 +243,12 @@ var serveCommand *cli.Command = &cli.Command{
 			promhttp.HandlerOpts{
 				// Opt into OpenMetrics to support exemplars.
 				EnableOpenMetrics: true,
+
+				// One failing collector must not cost the whole
+				// scrape. Without this, promhttp returns HTTP 500
+				// and Prometheus records the target as down, which
+				// hides which subsystem actually broke.
+				ErrorHandling: promhttp.ContinueOnError,
 			},
 		))
 

@@ -1,0 +1,103 @@
+package collector
+
+import (
+	"context"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/spacelift-io/prometheus-exporter/client"
+)
+
+// secondsPerMinute converts the API's minute-denominated usage into the seconds
+// Prometheus expects as a base unit. The existing metric names already say
+// _seconds, so this is not new behaviour.
+const secondsPerMinute = 60
+
+// Usage collects billing period usage.
+//
+// The usage resolver rejects machine sessions and additionally requires read
+// access to the root space, so it is the most restricted collector here and
+// gets its own document accordingly.
+type Usage struct {
+	periodStart        *prometheus.Desc
+	periodEnd          *prometheus.Desc
+	usedPrivateSeconds *prometheus.Desc
+	usedPublicSeconds  *prometheus.Desc
+	usedSeats          *prometheus.Desc
+}
+
+// NewUsage returns the billing usage collector.
+func NewUsage() *Usage {
+	return &Usage{
+		periodStart: prometheus.NewDesc(
+			"spacelift_current_billing_period_start_timestamp_seconds",
+			"The timestamp of the start of the current billing period",
+			nil,
+			nil),
+		periodEnd: prometheus.NewDesc(
+			"spacelift_current_billing_period_end_timestamp_seconds",
+			"The timestamp of the end of the current billing period",
+			nil,
+			nil),
+		usedPrivateSeconds: prometheus.NewDesc(
+			"spacelift_current_billing_period_used_private_seconds",
+			"The amount of private worker usage in the current billing period",
+			nil,
+			nil),
+		usedPublicSeconds: prometheus.NewDesc(
+			"spacelift_current_billing_period_used_public_seconds",
+			"The amount of public worker usage in the current billing period",
+			nil,
+			nil),
+		usedSeats: prometheus.NewDesc(
+			"spacelift_current_billing_period_used_seats",
+			"The number of seats used in the current billing period",
+			nil,
+			nil),
+	}
+}
+
+// Name implements Collector.
+func (c *Usage) Name() string { return "usage" }
+
+// Describe implements Collector.
+func (c *Usage) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.periodStart
+	ch <- c.periodEnd
+	ch <- c.usedPrivateSeconds
+	ch <- c.usedPublicSeconds
+	ch <- c.usedSeats
+}
+
+type usageQuery struct {
+	Usage struct {
+		BillingPeriodStart int `graphql:"billingPeriodStart"`
+		BillingPeriodEnd   int `graphql:"billingPeriodEnd"`
+		UsedPrivateMinutes int `graphql:"usedPrivateMinutes"`
+		UsedPublicMinutes  int `graphql:"usedPublicMinutes"`
+		UsedSeats          int `graphql:"usedSeats"`
+	} `graphql:"usage"`
+}
+
+// Collect implements Collector.
+func (c *Usage) Collect(ctx context.Context, api client.Client, ch chan<- prometheus.Metric) error {
+	var query usageQuery
+	if err := api.Query(ctx, &query, nil, "Usage"); err != nil {
+		return classify(err, c.Name())
+	}
+
+	usage := query.Usage
+
+	ch <- prometheus.MustNewConstMetric(
+		c.periodStart, prometheus.GaugeValue, float64(usage.BillingPeriodStart))
+	ch <- prometheus.MustNewConstMetric(
+		c.periodEnd, prometheus.GaugeValue, float64(usage.BillingPeriodEnd))
+	ch <- prometheus.MustNewConstMetric(
+		c.usedPrivateSeconds, prometheus.GaugeValue, float64(usage.UsedPrivateMinutes*secondsPerMinute))
+	ch <- prometheus.MustNewConstMetric(
+		c.usedPublicSeconds, prometheus.GaugeValue, float64(usage.UsedPublicMinutes*secondsPerMinute))
+	ch <- prometheus.MustNewConstMetric(
+		c.usedSeats, prometheus.GaugeValue, float64(usage.UsedSeats))
+
+	return nil
+}
