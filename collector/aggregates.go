@@ -88,40 +88,43 @@ type aggregatesQuery struct {
 }
 
 // Collect implements Collector.
-func (c *Aggregates) Collect(ctx context.Context, api client.Client, ch chan<- prometheus.Metric) error {
+func (c *Aggregates) Collect(ctx context.Context, api client.NamedClient) ([]prometheus.Metric, error) {
 	var query aggregatesQuery
-	if err := api.Query(ctx, &query, nil, "Aggregates"); err != nil {
-		return classify(err, c.Name())
+	if err := api.QueryNamed(ctx, &query, nil, "Aggregates"); err != nil {
+		return nil, classify(err, c.Name())
 	}
+
+	metrics := make([]prometheus.Metric, 0,
+		len(query.Metrics.StacksCountByState)+len(query.Metrics.ResourcesCountByDrift)+3)
 
 	for _, point := range query.Metrics.StacksCountByState {
 		if len(point.Labels) > 0 {
-			ch <- prometheus.MustNewConstMetric(
-				c.stacksCountByState, prometheus.GaugeValue, point.Value, point.Labels[0])
+			metrics = append(metrics, prometheus.MustNewConstMetric(
+				c.stacksCountByState, prometheus.GaugeValue, point.Value, point.Labels[0]))
 		}
 	}
 
 	for _, point := range query.Metrics.ResourcesCountByDrift {
 		if len(point.Labels) > 0 {
-			ch <- prometheus.MustNewConstMetric(
-				c.resourcesCountByDrift, prometheus.GaugeValue, point.Value, point.Labels[0])
+			metrics = append(metrics, prometheus.MustNewConstMetric(
+				c.resourcesCountByDrift, prometheus.GaugeValue, point.Value, point.Labels[0]))
 		}
 	}
 
-	emitFirst(ch, c.avgStackSize, query.Metrics.AvgStackSizeByResourceCount)
-	emitFirst(ch, c.averageRunDuration, query.Metrics.AverageRunDuration)
-	emitFirst(ch, c.medianRunDuration, query.Metrics.MedianRunDuration)
+	metrics = appendFirst(metrics, c.avgStackSize, query.Metrics.AvgStackSizeByResourceCount)
+	metrics = appendFirst(metrics, c.averageRunDuration, query.Metrics.AverageRunDuration)
+	metrics = appendFirst(metrics, c.medianRunDuration, query.Metrics.MedianRunDuration)
 
-	return nil
+	return metrics, nil
 }
 
-// emitFirst emits a single-valued series, which the API still returns as a
+// appendFirst appends a single-valued series, which the API still returns as a
 // list. An empty list means the account has no data yet, in which case the
 // series is omitted rather than reported as zero.
-func emitFirst(ch chan<- prometheus.Metric, desc *prometheus.Desc, points []dataPoint) {
+func appendFirst(metrics []prometheus.Metric, desc *prometheus.Desc, points []dataPoint) []prometheus.Metric {
 	if len(points) == 0 {
-		return
+		return metrics
 	}
 
-	ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, points[0].Value)
+	return append(metrics, prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, points[0].Value))
 }

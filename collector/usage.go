@@ -80,24 +80,24 @@ type usageQuery struct {
 }
 
 // Collect implements Collector.
-func (c *Usage) Collect(ctx context.Context, api client.Client, ch chan<- prometheus.Metric) error {
+func (c *Usage) Collect(ctx context.Context, api client.NamedClient) ([]prometheus.Metric, error) {
 	var query usageQuery
-	if err := api.Query(ctx, &query, nil, "Usage"); err != nil {
-		return classify(err, c.Name())
+	if err := api.QueryNamed(ctx, &query, nil, "Usage"); err != nil {
+		return nil, classify(err, c.Name())
 	}
 
 	usage := query.Usage
 
-	ch <- prometheus.MustNewConstMetric(
-		c.periodStart, prometheus.GaugeValue, float64(usage.BillingPeriodStart))
-	ch <- prometheus.MustNewConstMetric(
-		c.periodEnd, prometheus.GaugeValue, float64(usage.BillingPeriodEnd))
-	ch <- prometheus.MustNewConstMetric(
-		c.usedPrivateSeconds, prometheus.GaugeValue, float64(usage.UsedPrivateMinutes*secondsPerMinute))
-	ch <- prometheus.MustNewConstMetric(
-		c.usedPublicSeconds, prometheus.GaugeValue, float64(usage.UsedPublicMinutes*secondsPerMinute))
-	ch <- prometheus.MustNewConstMetric(
-		c.usedSeats, prometheus.GaugeValue, float64(usage.UsedSeats))
-
-	return nil
+	return []prometheus.Metric{
+		prometheus.MustNewConstMetric(
+			c.periodStart, prometheus.GaugeValue, float64(usage.BillingPeriodStart)),
+		prometheus.MustNewConstMetric(
+			c.periodEnd, prometheus.GaugeValue, float64(usage.BillingPeriodEnd)),
+		prometheus.MustNewConstMetric(
+			c.usedPrivateSeconds, prometheus.GaugeValue, float64(usage.UsedPrivateMinutes*secondsPerMinute)),
+		prometheus.MustNewConstMetric(
+			c.usedPublicSeconds, prometheus.GaugeValue, float64(usage.UsedPublicMinutes*secondsPerMinute)),
+		prometheus.MustNewConstMetric(
+			c.usedSeats, prometheus.GaugeValue, float64(usage.UsedSeats)),
+	}, nil
 }

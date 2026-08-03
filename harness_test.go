@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,33 +29,19 @@ var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/golden/*.
 // test server. It lets collector tests exercise the real client and the real
 // GraphQL encoding without standing in an API-key exchange.
 type fakeSession struct {
-	endpoint     string
-	token        string
-	refreshCalls int
+	endpoint string
 }
 
-func (s *fakeSession) BearerToken(context.Context) (string, error) {
-	if s.token == "" {
-		return "initial-token", nil
-	}
-
-	return s.token, nil
-}
-
-func (s *fakeSession) Endpoint() string { return s.endpoint }
-
-func (s *fakeSession) RefreshToken(context.Context) error {
-	s.refreshCalls++
-	s.token = "refreshed-token"
-
-	return nil
-}
+func (s *fakeSession) BearerToken(context.Context) (string, error) { return "test-token", nil }
+func (s *fakeSession) Endpoint() string                            { return s.endpoint }
+func (s *fakeSession) RefreshToken(context.Context) error          { return nil }
 
 // graphqlStub is a stand-in for the Spacelift GraphQL API. It records every
 // query body it receives and replies with a canned response, so tests can
 // assert on the shape of the query as well as on the metrics produced from it.
 type graphqlStub struct {
 	server *httptest.Server
+	mutex  sync.Mutex
 
 	// response is written verbatim as the HTTP body.
 	response string
@@ -67,10 +54,9 @@ type graphqlStub struct {
 	// queries holds the raw "query" string of every request received.
 	queries []string
 
-	// operationNames and authorizationHeaders retain the envelope and request
-	// metadata that are not present in the rendered query string.
-	operationNames       []string
-	authorizationHeaders []string
+	// operationNames retains the envelope field, which is not part of the
+	// rendered query string. Guarded by mutex like queries.
+	operationNames []string
 }
 
 // failOperation makes the named operation return the given body, leaving every
@@ -161,20 +147,20 @@ func projectFixture(t *testing.T, response string, fields []string) string {
 		return response
 	}
 
-	if envelope.Errors != nil {
-		return response
-	}
-
-	projected := make(map[string]json.RawMessage, len(fields))
-	for _, field := range fields {
-		if value, ok := envelope.Data[field]; ok {
-			projected[field] = value
+	var projected map[string]json.RawMessage
+	if envelope.Data != nil {
+		projected = make(map[string]json.RawMessage, len(fields))
+		for _, field := range fields {
+			if value, ok := envelope.Data[field]; ok {
+				projected[field] = value
+			}
 		}
 	}
 
 	out, err := json.Marshal(struct {
-		Data map[string]json.RawMessage `json:"data"`
-	}{Data: projected})
+		Data   map[string]json.RawMessage `json:"data"`
+		Errors json.RawMessage            `json:"errors,omitempty"`
+	}{Data: projected, Errors: envelope.Errors})
 	if err != nil {
 		t.Fatalf("re-marshalling projected fixture: %v", err)
 	}
@@ -202,9 +188,10 @@ func newGraphQLStub(t *testing.T, response string) *graphqlStub {
 			t.Errorf("unmarshalling stub request body %q: %v", body, err)
 			return
 		}
+		stub.mutex.Lock()
 		stub.queries = append(stub.queries, envelope.Query)
 		stub.operationNames = append(stub.operationNames, envelope.OperationName)
-		stub.authorizationHeaders = append(stub.authorizationHeaders, r.Header.Get("Authorization"))
+		stub.mutex.Unlock()
 
 		response := stub.response
 		if override, ok := stub.overrides[operationOf(envelope.Query)]; ok {
@@ -226,12 +213,16 @@ func newGraphQLStub(t *testing.T, response string) *graphqlStub {
 func (s *graphqlStub) collector(t *testing.T) prometheus.Collector {
 	t.Helper()
 
-	return collectorWithSession(t, s, &fakeSession{endpoint: s.server.URL})
+	return s.collectorWithPartialScrapes(t, false)
 }
 
-// collectorWithSession builds an exporter against an explicit session, so
-// tests can observe token refreshes.
-func collectorWithSession(t *testing.T, stub *graphqlStub, session *fakeSession) prometheus.Collector {
+func (s *graphqlStub) partialCollector(t *testing.T) prometheus.Collector {
+	t.Helper()
+
+	return s.collectorWithPartialScrapes(t, true)
+}
+
+func (s *graphqlStub) collectorWithPartialScrapes(t *testing.T, partialScrapes bool) prometheus.Collector {
 	t.Helper()
 
 	ctx := logging.Init(context.Background(), true)
@@ -241,12 +232,35 @@ func collectorWithSession(t *testing.T, stub *graphqlStub, session *fakeSession)
 		t.Fatalf("newCollectors: %v", err)
 	}
 
-	exporter, err := newExporter(ctx, stub.server.Client(), session, 5*time.Second, collectors)
+	exporter, err := newExporter(
+		ctx,
+		s.server.Client(),
+		&fakeSession{endpoint: s.server.URL},
+		5*time.Second,
+		collectors,
+		partialScrapes,
+	)
 	if err != nil {
 		t.Fatalf("newExporter: %v", err)
 	}
 
 	return exporter
+}
+
+func (s *graphqlStub) recordedQueries() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	return append([]string(nil), s.queries...)
+}
+
+// recordedOperationNames returns a copy of the envelope operationName fields,
+// in arrival order.
+func (s *graphqlStub) recordedOperationNames() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	return append([]string(nil), s.operationNames...)
 }
 
 var descFQName = regexp.MustCompile(`fqName: "([^"]+)"`)
@@ -269,11 +283,12 @@ func fqName(t *testing.T, desc string) string {
 func (s *graphqlStub) lastQuery(t *testing.T) string {
 	t.Helper()
 
-	if len(s.queries) == 0 {
+	queries := s.recordedQueries()
+	if len(queries) == 0 {
 		t.Fatal("no GraphQL queries were recorded")
 	}
 
-	return regexp.MustCompile(`\s+`).ReplaceAllString(s.queries[len(s.queries)-1], " ")
+	return regexp.MustCompile(`\s+`).ReplaceAllString(queries[len(queries)-1], " ")
 }
 
 // gather registers the collector on a pedantic registry (which validates

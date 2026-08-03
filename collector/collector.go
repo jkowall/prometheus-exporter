@@ -18,6 +18,8 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,30 +40,30 @@ type Collector interface {
 	// --collector.<name> flag.
 	Name() string
 
-	// Describe sends the descriptors of every metric this collector can
-	// emit. Every descriptor announced here must be emitted by a successful
-	// Collect, and vice versa.
+	// Describe sends the descriptors of every metric this collector can emit.
 	Describe(ch chan<- *prometheus.Desc)
 
-	// Collect queries the API and emits metrics. Returning ErrNotSupported
-	// marks the collector unsupported rather than failed.
-	Collect(ctx context.Context, c client.Client, ch chan<- prometheus.Metric) error
+	// Collect queries the API and returns a complete metric set. Returning
+	// ErrNotSupported marks the collector unsupported rather than failed.
+	Collect(ctx context.Context, c client.NamedClient) ([]prometheus.Metric, error)
 }
 
 // Exporter fans a scrape out across collectors, isolating their failures from
 // each other.
 type Exporter struct {
-	ctx           context.Context
-	logger        *zap.SugaredLogger
-	client        client.Client
-	scrapeTimeout time.Duration
-	collectors    []Collector
+	ctx            context.Context
+	logger         *zap.SugaredLogger
+	client         client.NamedClient
+	scrapeTimeout  time.Duration
+	collectors     []Collector
+	partialScrapes bool
 
 	collectorSuccess   *prometheus.Desc
 	collectorDuration  *prometheus.Desc
 	collectorSupported *prometheus.Desc
 	scrapeDuration     *prometheus.Desc
 	buildInfo          *prometheus.Desc
+	scrapeError        *prometheus.Desc
 }
 
 // BuildInfo identifies the running exporter.
@@ -71,16 +73,29 @@ type BuildInfo struct {
 	GoVersion string
 }
 
+// Option configures an Exporter.
+type Option func(*Exporter)
+
+// WithPartialScrapes returns available metrics unless every supported
+// collector fails. Without this option, any collector error or unsupported
+// result preserves the legacy HTTP 500 behavior.
+func WithPartialScrapes() Option {
+	return func(e *Exporter) {
+		e.partialScrapes = true
+	}
+}
+
 // New returns an Exporter over the given collectors.
 func New(
 	ctx context.Context,
 	logger *zap.SugaredLogger,
-	c client.Client,
+	c client.NamedClient,
 	scrapeTimeout time.Duration,
 	build BuildInfo,
 	collectors []Collector,
+	options ...Option,
 ) *Exporter {
-	return &Exporter{
+	exporter := &Exporter{
 		ctx:           ctx,
 		logger:        logger,
 		client:        c,
@@ -117,7 +132,18 @@ func New(
 				"commit":    build.Commit,
 				"goversion": build.GoVersion,
 			}),
+		scrapeError: prometheus.NewDesc(
+			"spacelift_error",
+			"One or more Spacelift metric collectors failed",
+			nil,
+			nil),
 	}
+
+	for _, option := range options {
+		option(exporter)
+	}
+
+	return exporter
 }
 
 // Describe implements prometheus.Collector.
@@ -135,53 +161,116 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 //
-// Every collector runs, and one failing collector does not suppress the others.
-// A failure is reported through spacelift_scrape_collector_success rather than
-// by failing the scrape, so that a Prometheus target stays up and the operator
-// can see precisely which subsystem is broken.
+// Every collector runs, and one failing collector does not suppress metrics
+// collected by the others. Strict mode preserves the legacy failed-scrape
+// contract; partial mode exposes available metrics unless every supported
+// collector fails. In both modes, health series identify the broken subsystem.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	start := time.Now()
+	ctx, cancel := context.WithTimeout(e.ctx, e.scrapeTimeout)
+	defer cancel()
 
 	ch <- prometheus.MustNewConstMetric(e.buildInfo, prometheus.GaugeValue, 1)
 
-	for _, c := range e.collectors {
-		e.collect(c, ch)
+	results := make([]collectionResult, len(e.collectors))
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(len(e.collectors))
+
+	for index, c := range e.collectors {
+		go func() {
+			defer waitGroup.Done()
+			results[index] = e.collect(ctx, c)
+		}()
+	}
+	waitGroup.Wait()
+
+	var scrapeIssues []error
+	successfulCollectors := 0
+	failedCollectors := 0
+
+	for _, result := range results {
+		for _, metric := range result.metrics {
+			ch <- metric
+		}
+
+		success, supported := 1.0, 1.0
+		switch {
+		case errors.Is(result.err, ErrNotSupported):
+			supported = 0
+			e.logger.Debugw(
+				"Collector is not supported on this deployment",
+				"collector", result.collector.Name(),
+			)
+			scrapeIssues = append(scrapeIssues, result.err)
+		case errors.Is(result.err, context.DeadlineExceeded):
+			success = 0
+			failedCollectors++
+			e.logger.Errorw(
+				"Collector timed out querying the Spacelift API",
+				"collector", result.collector.Name(),
+				"timeout", e.scrapeTimeout,
+			)
+			scrapeIssues = append(scrapeIssues, result.err)
+		case result.err != nil:
+			success = 0
+			failedCollectors++
+			e.logger.Errorw(
+				"Collector failed",
+				"collector", result.collector.Name(),
+				zap.Error(result.err),
+			)
+			scrapeIssues = append(scrapeIssues, result.err)
+		default:
+			successfulCollectors++
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			e.collectorSuccess, prometheus.GaugeValue, success, result.collector.Name())
+		ch <- prometheus.MustNewConstMetric(
+			e.collectorSupported, prometheus.GaugeValue, supported, result.collector.Name())
+		ch <- prometheus.MustNewConstMetric(
+			e.collectorDuration, prometheus.GaugeValue, result.duration.Seconds(), result.collector.Name())
 	}
 
 	ch <- prometheus.MustNewConstMetric(
 		e.scrapeDuration, prometheus.GaugeValue, time.Since(start).Seconds(),
 	)
+
+	// Preserve the existing failure contract unless partial scrapes are
+	// explicitly enabled. In partial mode, unsupported collectors are healthy
+	// but unavailable; only a genuine failure with no successful collector
+	// stays an HTTP 500.
+	partialFailure := failedCollectors > 0 && successfulCollectors == 0
+	if len(scrapeIssues) > 0 && (!e.partialScrapes || partialFailure) {
+		ch <- prometheus.NewInvalidMetric(e.scrapeError, errors.Join(scrapeIssues...))
+	}
 }
 
-func (e *Exporter) collect(c Collector, ch chan<- prometheus.Metric) {
+type collectionResult struct {
+	collector Collector
+	metrics   []prometheus.Metric
+	err       error
+	duration  time.Duration
+}
+
+func (e *Exporter) collect(ctx context.Context, c Collector) (result collectionResult) {
 	start := time.Now()
+	result.collector = c
 
-	// Wrapped so that cancel runs as soon as this collector is done rather
-	// than at the end of the whole scrape.
-	err := func() error {
-		ctx, cancel := context.WithTimeout(e.ctx, e.scrapeTimeout)
-		defer cancel()
-
-		return c.Collect(ctx, e.client, ch)
+	defer func() {
+		result.duration = time.Since(start)
+		if recovered := recover(); recovered != nil {
+			result.metrics = nil
+			result.err = fmt.Errorf("%s collector panicked: %v", c.Name(), recovered)
+		}
 	}()
 
-	duration := time.Since(start)
-
-	success, supported := 1.0, 1.0
-	switch {
-	case errors.Is(err, ErrNotSupported):
-		supported = 0
-		e.logger.Debugw("Collector is not supported on this deployment", "collector", c.Name())
-	case errors.Is(err, context.DeadlineExceeded):
-		success = 0
-		e.logger.Errorw("Collector timed out querying the Spacelift API",
-			"collector", c.Name(), "timeout", e.scrapeTimeout)
-	case err != nil:
-		success = 0
-		e.logger.Errorw("Collector failed", "collector", c.Name(), zap.Error(err))
+	result.metrics, result.err = c.Collect(ctx, e.client)
+	if result.err != nil {
+		// A collector is atomic: never expose metrics produced alongside an
+		// error, because they may be incomplete.
+		result.metrics = nil
 	}
 
-	ch <- prometheus.MustNewConstMetric(e.collectorSuccess, prometheus.GaugeValue, success, c.Name())
-	ch <- prometheus.MustNewConstMetric(e.collectorSupported, prometheus.GaugeValue, supported, c.Name())
-	ch <- prometheus.MustNewConstMetric(e.collectorDuration, prometheus.GaugeValue, duration.Seconds(), c.Name())
+	return result
 }

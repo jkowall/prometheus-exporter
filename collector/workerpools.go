@@ -73,11 +73,13 @@ type workerPoolsQuery struct {
 }
 
 // Collect implements Collector.
-func (c *WorkerPools) Collect(ctx context.Context, api client.Client, ch chan<- prometheus.Metric) error {
+func (c *WorkerPools) Collect(ctx context.Context, api client.NamedClient) ([]prometheus.Metric, error) {
 	var query workerPoolsQuery
-	if err := api.Query(ctx, &query, nil, "WorkerPools"); err != nil {
-		return classify(err, c.Name())
+	if err := api.QueryNamed(ctx, &query, nil, "WorkerPools"); err != nil {
+		return nil, classify(err, c.Name())
 	}
+
+	metrics := make([]prometheus.Metric, 0, len(query.WorkerPools)*4)
 
 	for _, pool := range query.WorkerPools {
 		var drained int
@@ -87,15 +89,17 @@ func (c *WorkerPools) Collect(ctx context.Context, api client.Client, ch chan<- 
 			}
 		}
 
-		ch <- prometheus.MustNewConstMetric(
-			c.runsPending, prometheus.GaugeValue, float64(pool.PendingRuns), pool.ID, pool.Name)
-		ch <- prometheus.MustNewConstMetric(
-			c.workersBusy, prometheus.GaugeValue, float64(pool.BusyWorkers), pool.ID, pool.Name)
-		ch <- prometheus.MustNewConstMetric(
-			c.workers, prometheus.GaugeValue, float64(len(pool.Workers)), pool.ID, pool.Name)
-		ch <- prometheus.MustNewConstMetric(
-			c.workersDrained, prometheus.GaugeValue, float64(drained), pool.ID, pool.Name)
+		metrics = append(metrics,
+			prometheus.MustNewConstMetric(
+				c.runsPending, prometheus.GaugeValue, float64(pool.PendingRuns), pool.ID, pool.Name),
+			prometheus.MustNewConstMetric(
+				c.workersBusy, prometheus.GaugeValue, float64(pool.BusyWorkers), pool.ID, pool.Name),
+			prometheus.MustNewConstMetric(
+				c.workers, prometheus.GaugeValue, float64(len(pool.Workers)), pool.ID, pool.Name),
+			prometheus.MustNewConstMetric(
+				c.workersDrained, prometheus.GaugeValue, float64(drained), pool.ID, pool.Name),
+		)
 	}
 
-	return nil
+	return metrics, nil
 }

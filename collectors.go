@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"time"
 
@@ -18,27 +17,41 @@ import (
 	"github.com/spacelift-io/prometheus-exporter/logging"
 )
 
-// defaultCollectors are enabled unless --collector=no-<name> says otherwise.
-//
-// A collector whose data is deployment- or tier-gated should be added here as
-// off by default, so that a SaaS account does not permanently report it as
-// unsupported.
-var defaultCollectors = []string{"publicworkerpool", "workerpools", "usage", "aggregates"}
+type machineProbe func(context.Context, client.NamedClient) error
+
+type collectorSpec struct {
+	name           string
+	defaultEnabled bool
+	build          func() collector.Collector
+	machineProbe   machineProbe
+}
+
+// collectorSpecs is sorted by name so collector execution, logging and help
+// output remain stable. A deployment- or tier-specific collector should be off
+// by default so unsupported deployments do not report it permanently.
+var collectorSpecs = []collectorSpec{
+	{name: "aggregates", defaultEnabled: true, build: func() collector.Collector {
+		return collector.NewAggregates()
+	}, machineProbe: probeAggregates},
+	{name: "publicworkerpool", defaultEnabled: true, build: func() collector.Collector {
+		return collector.NewPublicWorkerPool()
+	}, machineProbe: probePublicWorkerPool},
+	{name: "usage", defaultEnabled: true, build: func() collector.Collector {
+		return collector.NewUsage()
+	}, machineProbe: probeUsage},
+	{name: "workerpools", defaultEnabled: true, build: func() collector.Collector {
+		return collector.NewWorkerPools()
+	}},
+}
 
 // newCollectors builds the enabled collector set.
 func newCollectors(enabled map[string]bool) ([]collector.Collector, error) {
-	available := map[string]func() collector.Collector{
-		"publicworkerpool": func() collector.Collector { return collector.NewPublicWorkerPool() },
-		"workerpools":      func() collector.Collector { return collector.NewWorkerPools() },
-		"usage":            func() collector.Collector { return collector.NewUsage() },
-		"aggregates":       func() collector.Collector { return collector.NewAggregates() },
+	available := make(map[string]collectorSpec, len(collectorSpecs))
+	names := make([]string, 0, len(collectorSpecs))
+	for _, spec := range collectorSpecs {
+		available[spec.name] = spec
+		names = append(names, spec.name)
 	}
-
-	names := make([]string, 0, len(available))
-	for name := range available {
-		names = append(names, name)
-	}
-	slices.Sort(names)
 
 	for name := range enabled {
 		if _, ok := available[name]; !ok {
@@ -48,15 +61,15 @@ func newCollectors(enabled map[string]bool) ([]collector.Collector, error) {
 
 	// Emit in a stable order so that /metrics output does not shuffle
 	// between scrapes.
-	out := make([]collector.Collector, 0, len(names))
-	for _, name := range names {
-		on, set := enabled[name]
+	out := make([]collector.Collector, 0, len(collectorSpecs))
+	for _, spec := range collectorSpecs {
+		on, set := enabled[spec.name]
 		if !set {
-			on = slices.Contains(defaultCollectors, name)
+			on = spec.defaultEnabled
 		}
 
 		if on {
-			out = append(out, available[name]())
+			out = append(out, spec.build())
 		}
 	}
 
@@ -72,25 +85,70 @@ func newExporter(
 	session session.Session,
 	scrapeTimeout time.Duration,
 	collectors []collector.Collector,
+	partialScrapes bool,
 ) (*collector.Exporter, error) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return nil, errors.New("could not read build info")
 	}
 
+	options := []collector.Option(nil)
+	if partialScrapes {
+		options = append(options, collector.WithPartialScrapes())
+	}
+
 	return collector.New(
 		ctx,
 		logging.FromContext(ctx).Sugar(),
-		client.New(httpClient, session),
+		client.NewNamed(httpClient, session),
 		scrapeTimeout,
 		collector.BuildInfo{Version: version, Commit: commit, GoVersion: info.GoVersion},
 		collectors,
+		options...,
 	), nil
 }
 
-// machineGatedCollectors read fields the API refuses to serve to a machine
-// (API key) session.
-var machineGatedCollectors = []string{"publicworkerpool", "usage", "aggregates"}
+func machineProbeFor(name string) machineProbe {
+	for _, spec := range collectorSpecs {
+		if spec.name == name {
+			return spec.machineProbe
+		}
+	}
+
+	return nil
+}
+
+func probeAggregates(ctx context.Context, api client.NamedClient) error {
+	var probe struct {
+		Metrics struct {
+			StacksCountByState []struct {
+				Value float64 `graphql:"value"`
+			} `graphql:"stacksCountByState"`
+		} `graphql:"metrics"`
+	}
+
+	return api.QueryNamed(ctx, &probe, nil, "Probe")
+}
+
+func probePublicWorkerPool(ctx context.Context, api client.NamedClient) error {
+	var probe struct {
+		PublicWorkerPool struct {
+			Parallelism int `graphql:"parallelism"`
+		} `graphql:"publicWorkerPool"`
+	}
+
+	return api.QueryNamed(ctx, &probe, nil, "Probe")
+}
+
+func probeUsage(ctx context.Context, api client.NamedClient) error {
+	var probe struct {
+		Usage struct {
+			BillingPeriodStart int `graphql:"billingPeriodStart"`
+		} `graphql:"usage"`
+	}
+
+	return api.QueryNamed(ctx, &probe, nil, "Probe")
+}
 
 // warnIfMachineKey tells the operator at startup, rather than leaving them to
 // infer it from three permanently-failing collectors, that their key cannot
@@ -106,37 +164,35 @@ func warnIfMachineKey(
 	logger *zap.SugaredLogger,
 	collectors []collector.Collector,
 ) {
-	api := client.New(httpClient, session)
-
-	var probe struct {
-		Usage struct {
-			BillingPeriodStart int `graphql:"billingPeriodStart"`
-		} `graphql:"usage"`
+	var affected []string
+	var probe machineProbe
+	for _, c := range collectors {
+		if candidate := machineProbeFor(c.Name()); candidate != nil {
+			affected = append(affected, c.Name())
+			if probe == nil {
+				probe = candidate
+			}
+		}
 	}
+
+	if probe == nil {
+		return
+	}
+
+	api := client.NewNamed(httpClient, session)
 
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	err := api.Query(probeCtx, &probe, nil, "Probe")
+	err := probe(probeCtx, api)
 	if err == nil || !strings.Contains(err.Error(), "not available for machine sessions") {
-		return
-	}
-
-	var affected []string
-	for _, c := range collectors {
-		if slices.Contains(machineGatedCollectors, c.Name()) {
-			affected = append(affected, c.Name())
-		}
-	}
-
-	if len(affected) == 0 {
 		return
 	}
 
 	logger.Warnw(
 		"This API key is a machine user, so some collectors cannot read their data. "+
-			"They will report spacelift_scrape_collector_supported=0. "+
-			"Create a non-machine API key to enable them, or disable them explicitly.",
+			"Enable partial scrapes to export the remaining metrics and mark these collectors unsupported, "+
+			"or disable them explicitly.",
 		"collectors", strings.Join(affected, ", "),
 	)
 }

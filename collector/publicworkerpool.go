@@ -63,17 +63,17 @@ type publicWorkerPoolQuery struct {
 }
 
 // Collect implements Collector.
-func (c *PublicWorkerPool) Collect(ctx context.Context, api client.Client, ch chan<- prometheus.Metric) error {
+func (c *PublicWorkerPool) Collect(ctx context.Context, api client.NamedClient) ([]prometheus.Metric, error) {
 	var query publicWorkerPoolQuery
-	if err := api.Query(ctx, &query, nil, "PublicWorkerPool"); err != nil {
-		return classify(err, c.Name())
+	if err := api.QueryNamed(ctx, &query, nil, "PublicWorkerPool"); err != nil {
+		return nil, classify(err, c.Name())
 	}
 
 	pool := query.PublicWorkerPool
 
-	ch <- prometheus.MustNewConstMetric(c.runsPending, prometheus.GaugeValue, float64(pool.PendingRuns))
-	ch <- prometheus.MustNewConstMetric(c.workersBusy, prometheus.GaugeValue, float64(pool.BusyWorkers))
-	ch <- prometheus.MustNewConstMetric(c.parallelism, prometheus.GaugeValue, float64(pool.Parallelism))
-
-	return nil
+	return []prometheus.Metric{
+		prometheus.MustNewConstMetric(c.runsPending, prometheus.GaugeValue, float64(pool.PendingRuns)),
+		prometheus.MustNewConstMetric(c.workersBusy, prometheus.GaugeValue, float64(pool.BusyWorkers)),
+		prometheus.MustNewConstMetric(c.parallelism, prometheus.GaugeValue, float64(pool.Parallelism)),
+	}, nil
 }

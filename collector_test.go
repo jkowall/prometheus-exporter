@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -138,11 +140,16 @@ func TestQueryShape(t *testing.T) {
 	metrics := make(chan prometheus.Metric, 256)
 	stub.collector(t).Collect(metrics)
 	close(metrics)
+	queries := stub.recordedQueries()
+	defaultCollectors, err := newCollectors(nil)
+	if err != nil {
+		t.Fatalf("building the default collector set: %v", err)
+	}
 
 	// One request per enabled collector, and no more. Isolation costs
 	// requests, so the count is part of the contract with Spacelift's
 	// backend and a reviewer should see it change in a diff.
-	if got, want := len(stub.queries), len(defaultCollectors); got != want {
+	if got, want := len(queries), len(defaultCollectors); got != want {
 		t.Errorf("a scrape issued %d GraphQL requests, want %d (one per enabled collector)", got, want)
 	}
 
@@ -158,14 +165,14 @@ func TestQueryShape(t *testing.T) {
 	}
 
 	seen := map[string]string{}
-	for _, query := range stub.queries {
+	for _, query := range queries {
 		seen[operationOf(query)] = query
 	}
 
 	for operation, want := range expectedQueries {
 		got, ok := seen[operation]
 		if !ok {
-			t.Errorf("no request was named %s; got %v", operation, operationNames(stub.queries))
+			t.Errorf("no request was named %s; got %v", operation, operationNames(queries))
 			continue
 		}
 		if got != want {
@@ -175,10 +182,11 @@ func TestQueryShape(t *testing.T) {
 
 	// The envelope operationName must match the document, one per collector,
 	// or Spacelift's APM attribution sees anonymous queries.
-	if len(stub.operationNames) != len(expectedQueries) {
-		t.Errorf("operationName envelope fields = %v, want one per collector", stub.operationNames)
+	envelopeNames := stub.recordedOperationNames()
+	if len(envelopeNames) != len(expectedQueries) {
+		t.Errorf("operationName envelope fields = %v, want one per collector", envelopeNames)
 	}
-	for _, name := range stub.operationNames {
+	for _, name := range envelopeNames {
 		if _, ok := expectedQueries[name]; !ok {
 			t.Errorf("unexpected envelope operationName %q", name)
 		}
@@ -187,7 +195,7 @@ func TestQueryShape(t *testing.T) {
 	// Range fields return a bucket per day over a server-chosen window.
 	// Prometheus should be given point-in-time values and left to do its
 	// own windowing, so none of these belong in a scrape.
-	for _, query := range stub.queries {
+	for _, query := range queries {
 		for _, forbidden := range []string{"metricsRange", "Range{", "Range(", "averageRunDurationRange", "stackFailuresRange"} {
 			if strings.Contains(query, forbidden) {
 				t.Errorf("query selects the windowed field %q; Prometheus must do its own windowing", forbidden)
@@ -199,15 +207,14 @@ func TestQueryShape(t *testing.T) {
 // TestCollectorsAreIsolated is the point of the refactor: one failing domain
 // must not suppress the others.
 //
-// The stub fails every request, but the fixture the aggregates collector would
-// have received is irrelevant — what matters is that a scrape still produces
-// the metrics of the collectors that did work, and reports precisely which one
-// did not.
+// The stub fails the aggregates request while every other collector receives a
+// healthy response. A scrape should still produce the working collectors'
+// metrics and report precisely which collector did not work.
 func TestCollectorsAreIsolated(t *testing.T) {
 	stub := newGraphQLStub(t, fixture(t, "saas"))
-	stub.failOperation("PrometheusExporterAggregates", `{"errors":[{"message":"internal error"}]}`)
+	stub.failOperation("PrometheusExporterAggregates", fixture(t, "partial-failure"))
 
-	output := gather(t, stub.collector(t))
+	output := gather(t, stub.partialCollector(t))
 
 	// The failing collector is reported, and only it.
 	for _, want := range []string{
@@ -239,21 +246,67 @@ func TestCollectorsAreIsolated(t *testing.T) {
 	}
 }
 
-// TestGatherSucceedsWhenACollectorFails is the behaviour change this PR makes
-// explicit: a failed collector no longer fails Gather(), so promhttp returns
-// 200 and Prometheus's own up{} series stays 1. Operators who alerted on up
-// must move to spacelift_scrape_collector_success.
-func TestGatherSucceedsWhenACollectorFails(t *testing.T) {
-	stub := newGraphQLStub(t, fixture(t, "saas"))
-	stub.failOperation("PrometheusExporterAggregates", `{"errors":[{"message":"internal error"}]}`)
+func TestMetricsHandlerPartialScrapePolicy(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		partialScrapes  bool
+		failAll         bool
+		wantStatus      int
+		wantPartialBody bool
+	}{
+		{
+			name:       "legacy behavior is the default",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:            "partial scrapes are opt in",
+			partialScrapes:  true,
+			wantStatus:      http.StatusOK,
+			wantPartialBody: true,
+		},
+		{
+			name:           "complete failure stays visible in partial mode",
+			partialScrapes: true,
+			failAll:        true,
+			wantStatus:     http.StatusInternalServerError,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := newGraphQLStub(t, fixture(t, "saas"))
+			if test.failAll {
+				stub.response = `{"errors":[{"message":"internal error"}]}`
+			} else {
+				stub.failOperation(
+					"PrometheusExporterAggregates",
+					`{"errors":[{"message":"internal error"}]}`,
+				)
+			}
 
-	registry := prometheus.NewPedanticRegistry()
-	if err := registry.Register(stub.collector(t)); err != nil {
-		t.Fatalf("registering collector: %v", err)
-	}
+			registry := prometheus.NewPedanticRegistry()
+			collector := stub.collectorWithPartialScrapes(t, test.partialScrapes)
+			if err := registry.Register(collector); err != nil {
+				t.Fatalf("registering collector: %v", err)
+			}
 
-	if _, err := registry.Gather(); err != nil {
-		t.Errorf("Gather() failed on a partial failure, so promhttp would return 500: %v", err)
+			request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			response := httptest.NewRecorder()
+			newMetricsHandler(registry).ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("HTTP status = %d, want %d; body:\n%s",
+					response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.wantPartialBody {
+				for _, want := range []string{
+					`spacelift_scrape_collector_success{collector="aggregates"} 0`,
+					"spacelift_worker_pool_runs_pending{",
+				} {
+					if !strings.Contains(response.Body.String(), want) {
+						t.Errorf("partial response is missing %q:\n%s", want, response.Body.String())
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -325,7 +378,7 @@ func TestMachineKeyDegradesGracefully(t *testing.T) {
 		stub.failOperation(operation, machineError)
 	}
 
-	output := gather(t, stub.collector(t))
+	output := gather(t, stub.partialCollector(t))
 
 	// Gated collectors report unsupported, not failed: the key is fine,
 	// the data simply is not available to it.
@@ -346,103 +399,10 @@ func TestMachineKeyDegradesGracefully(t *testing.T) {
 	}
 }
 
-// TestEveryCollectorFailingStillExports covers the worst case: the API is
-// returning errors for everything.
-//
-// Previously this produced two metrics — a scrape duration and an invalid
-// spacelift_error — and a failed Gather(). Now it produces a full set of
-// per-collector health metrics, so an operator can see the exporter is alive
-// and that every subsystem is failing, which are different facts.
-func TestEveryCollectorFailingStillExports(t *testing.T) {
-	stub := newGraphQLStub(t, `{"errors":[{"message":"internal error"}]}`)
-
-	output := gather(t, stub.collector(t))
-
-	for _, name := range defaultCollectors {
-		want := `spacelift_scrape_collector_success{collector="` + name + `"} 0`
-		if !strings.Contains(output, want) {
-			t.Errorf("missing %q in:\n%s", want, output)
-		}
-	}
-
-	// The exporter still identifies itself and still reports how long the
-	// scrape took, so the target is visibly up rather than silently absent.
-	for _, want := range []string{"spacelift_build_info{", "spacelift_scrape_duration_seconds "} {
-		if !strings.Contains(output, want) {
-			t.Errorf("missing %q in:\n%s", want, output)
-		}
-	}
-
-	// spacelift_error is gone. It was an invalid metric, which is what made
-	// Gather() fail and promhttp return 500.
-	if strings.Contains(output, "spacelift_error") {
-		t.Error("spacelift_error should have been replaced by spacelift_scrape_collector_success")
-	}
-}
-
-// TestSessionRefreshedOnUnauthorized covers the retry path in client.Query,
-// which refreshes the token and reissues the request when the API reports the
-// session is no longer valid.
-//
-// Each collector retries independently, so an expired token costs one refresh
-// per enabled collector on the scrape that discovers it. That is more calls
-// than strictly necessary, but it happens once per token lifetime and keeping
-// the collectors independent is worth more than deduplicating it.
-func TestSessionRefreshedOnUnauthorized(t *testing.T) {
-	stub := newGraphQLStub(t, `{"errors":[{"message":"unauthorized"}]}`)
-	session := &fakeSession{endpoint: stub.server.URL}
-
-	collector := collectorWithSession(t, stub, session)
-
-	metrics := make(chan prometheus.Metric, 256)
-	collector.Collect(metrics)
-	close(metrics)
-
-	if want := len(defaultCollectors); session.refreshCalls != want {
-		t.Errorf("RefreshToken called %d times, want %d (one per collector)", session.refreshCalls, want)
-	}
-
-	if want := 2 * len(defaultCollectors); len(stub.queries) != want {
-		t.Errorf("got %d GraphQL requests, want %d (one attempt plus one retry per collector)",
-			len(stub.queries), want)
-	}
-
-	wantAuthorization := []string{"Bearer initial-token", "Bearer refreshed-token"}
-	if len(stub.authorizationHeaders) != len(wantAuthorization) {
-		t.Fatalf("got Authorization headers %v, want %v", stub.authorizationHeaders, wantAuthorization)
-	}
-	for i, want := range wantAuthorization {
-		if got := stub.authorizationHeaders[i]; got != want {
-			t.Errorf("request %d Authorization header = %q, want %q", i+1, got, want)
-		}
-	}
-}
-
-// TestRetryPreservesOperationName guards a real bug: the retry in
-// client.Query reissues the request without graphql.OperationName, so the
-// second attempt reaches Spacelift as an anonymous query and cannot be
-// attributed to the exporter in their APM.
-func TestRetryPreservesOperationName(t *testing.T) {
-	stub := newGraphQLStub(t, `{"errors":[{"message":"unauthorized"}]}`)
-
-	metrics := make(chan prometheus.Metric, 256)
-	stub.collector(t).Collect(metrics)
-	close(metrics)
-
-	if len(stub.queries) < 2 {
-		t.Fatalf("expected a retry, got %d request(s)", len(stub.queries))
-	}
-
-	for i, query := range stub.queries {
-		if !strings.HasPrefix(query, "query PrometheusExporter{") {
-			t.Errorf("request %d query document lost the operation name: %s", i+1, query)
-		}
-		if got := stub.operationNames[i]; got != "PrometheusExporter" {
-			t.Errorf("request %d operationName envelope field = %q, want PrometheusExporter", i+1, got)
-		}
-	}
-}
-
+// The retry-path coverage that lived here (session refresh on unauthorized,
+// operation-name preservation across retries) moved to client/client_test.go,
+// where it also proves the refreshed bearer token is actually used and that
+// concurrent unauthorized responses trigger only one refresh.
 func operationNames(queries []string) []string {
 	out := make([]string, 0, len(queries))
 	for _, q := range queries {

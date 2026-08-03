@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/hasura/go-graphql-client"
@@ -52,14 +53,21 @@ func FromAPIKeyProvider(ctx context.Context, client *http.Client, endpoint, keyI
 
 type apiKey struct {
 	apiToken
-	keyID  string
-	secret SecretProvider
+	keyID        string
+	secret       SecretProvider
+	refreshMutex sync.Mutex
 }
 
 func (g *apiKey) BearerToken(ctx context.Context) (string, error) {
 	if !g.isFresh() {
-		if err := g.exchange(ctx); err != nil {
-			return "", err
+		g.refreshMutex.Lock()
+		defer g.refreshMutex.Unlock()
+
+		// Another caller may have refreshed while this one waited.
+		if !g.isFresh() {
+			if err := g.exchange(ctx); err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -67,7 +75,14 @@ func (g *apiKey) BearerToken(ctx context.Context) (string, error) {
 }
 
 func (g *apiKey) RefreshToken(ctx context.Context) error {
-	return g.exchange(ctx)
+	g.refreshMutex.Lock()
+	defer g.refreshMutex.Unlock()
+
+	if err := g.exchange(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (g *apiKey) exchange(ctx context.Context) error {
