@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -23,6 +25,20 @@ func TestCollectGolden(t *testing.T) {
 			assertGolden(t, shape, gather(t, stub.collector(t)))
 		})
 	}
+}
+
+// TestCollectGoldenPartialFailure pins the exposition output of a partial-mode
+// scrape in which one collector fails. This is the only golden that captures a
+// failure shape: success=0 for the broken collector, the healthy collectors'
+// metrics still present, and the failed collector's own families absent rather
+// than zeroed. Strict mode has no golden because a failing strict scrape
+// discards the gather entirely; its contract is pinned by
+// TestStrictModeGatherErrorNamesTheFailure in the collector package.
+func TestCollectGoldenPartialFailure(t *testing.T) {
+	stub := newGraphQLStub(t, fixture(t, "saas"))
+	stub.failOperation("PrometheusExporterAggregates", `{"errors":[{"message":"internal error"}]}`)
+
+	assertGolden(t, "partial-failure", gather(t, stub.partialCollector(t)))
 }
 
 // TestDescribeMatchesCollect asserts that every descriptor announced by
@@ -180,16 +196,21 @@ func TestQueryShape(t *testing.T) {
 		}
 	}
 
-	// The envelope operationName must match the document, one per collector,
-	// or Spacelift's APM attribution sees anonymous queries.
+	// The envelope operationName must match the document, exactly one per
+	// collector, or Spacelift's APM attribution sees anonymous or misattributed
+	// queries. Compared as a sorted multiset so a duplicate of one valid name
+	// cannot mask another going missing.
 	envelopeNames := stub.recordedOperationNames()
-	if len(envelopeNames) != len(expectedQueries) {
-		t.Errorf("operationName envelope fields = %v, want one per collector", envelopeNames)
+	sort.Strings(envelopeNames)
+
+	wantNames := make([]string, 0, len(expectedQueries))
+	for name := range expectedQueries {
+		wantNames = append(wantNames, name)
 	}
-	for _, name := range envelopeNames {
-		if _, ok := expectedQueries[name]; !ok {
-			t.Errorf("unexpected envelope operationName %q", name)
-		}
+	sort.Strings(wantNames)
+
+	if !slices.Equal(envelopeNames, wantNames) {
+		t.Errorf("operationName envelope fields = %v, want exactly %v", envelopeNames, wantNames)
 	}
 
 	// Range fields return a bucket per day over a server-chosen window.

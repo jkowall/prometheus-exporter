@@ -132,6 +132,12 @@ func New(
 				"commit":    build.Commit,
 				"goversion": build.GoVersion,
 			}),
+		// scrapeError is deliberately absent from Describe: it is only
+		// ever emitted through NewInvalidMetric, whose purpose is to fail
+		// Gather() so promhttp returns HTTP 500. It never renders in the
+		// exposition format, so it is not part of the metric surface.
+		// The Gather() error text names it; TestStrictModeGatherErrorNames
+		// pins that.
 		scrapeError: prometheus.NewDesc(
 			"spacelift_error",
 			"One or more Spacelift metric collectors failed",
@@ -163,8 +169,12 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 //
 // Every collector runs, and one failing collector does not suppress metrics
 // collected by the others. Strict mode preserves the legacy failed-scrape
-// contract; partial mode exposes available metrics unless every supported
-// collector fails. In both modes, health series identify the broken subsystem.
+// contract: the spacelift_error invalid metric fails Gather(), promhttp then
+// discards everything gathered and returns HTTP 500, so on a failing scrape
+// the broken subsystem is named in the response body and the logs rather than
+// in a queryable series. The health series are scrapeable during failures only
+// in partial mode, which exposes available metrics unless every supported
+// collector fails.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(e.ctx, e.scrapeTimeout)

@@ -232,7 +232,7 @@ The following metrics are provided by the exporter:
 | `spacelift_scrape_collector_success`                       | `collector`                          | Whether the collector succeeded on the last scrape                                             |
 | `spacelift_scrape_collector_supported`                     | `collector`                          | Whether the collector is available for this deployment, tier, and API key                      |
 | `spacelift_scrape_collector_duration_seconds`              | `collector`                          | The duration of the collector's Spacelift API request on the last scrape                       |
-| `spacelift_scrape_duration_seconds`                        |                                      | The total duration of the last scrape across all concurrent collectors                         |
+| `spacelift_scrape_duration_seconds`                        |                                      | The duration in seconds of the request to the Spacelift API for metrics (wall time of the whole scrape; collectors query concurrently) |
 | `spacelift_build_info`                                     |                                      | Contains build information about the exporter (version, commit, etc)                           |
 
 ## Example Dashboard

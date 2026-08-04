@@ -192,3 +192,29 @@ func TestCollectorPanicFailsScrapeInsteadOfCrashingProcess(t *testing.T) {
 		t.Fatalf("Gather() error = %v, want recovered collector panic", err)
 	}
 }
+
+// TestStrictModeGatherErrorNamesTheFailure restores a guarantee the exporter
+// has always had: when a strict-mode scrape fails, the error promhttp writes
+// into the HTTP 500 body carries the spacelift_error family name and the name
+// of the collector that broke. That text is the only failure diagnostics an
+// operator gets in strict mode, since the gather's series are discarded, so it
+// is a contract worth pinning.
+func TestStrictModeGatherErrorNamesTheFailure(t *testing.T) {
+	healthy := newTestCollector("healthy", func(context.Context) ([]prometheus.Metric, error) {
+		return nil, nil
+	})
+	failed := newTestCollector("aggregates", func(context.Context) ([]prometheus.Metric, error) {
+		return nil, errors.New("aggregates: internal error")
+	})
+
+	err := gatherExporter(newTestExporter(time.Second, []Collector{healthy, failed}))
+	if err == nil {
+		t.Fatal("strict mode Gather() succeeded with a failing collector, want the legacy failure contract")
+	}
+
+	for _, want := range []string{"spacelift_error", "aggregates"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("strict-mode Gather() error does not name %q, so the 500 body cannot identify the failure: %v", want, err)
+		}
+	}
+}
