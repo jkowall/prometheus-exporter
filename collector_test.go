@@ -385,10 +385,12 @@ func TestUnknownCollectorIsRejected(t *testing.T) {
 	}
 }
 
-// TestMachineKeyDegradesGracefully covers the third availability axis. A
-// machine API key cannot read publicWorkerPool, usage or metrics, but can read
-// workerPools. Under the old single query that meant no metrics at all.
-func TestMachineKeyDegradesGracefully(t *testing.T) {
+// TestGatedBackendDegradesGracefully covers backends that reject machine
+// sessions on publicWorkerPool, usage and metrics while serving workerPools.
+// Spacelift SaaS removed those gates in August 2026 (backend #16058), but
+// Self-Hosted releases older than that still have them, and under the old
+// single query they meant no metrics at all.
+func TestGatedBackendDegradesGracefully(t *testing.T) {
 	stub := newGraphQLStub(t, fixture(t, "saas"))
 	machineError := `{"errors":[{"message":"not available for machine sessions"}]}`
 	for _, operation := range []string{
@@ -416,7 +418,7 @@ func TestMachineKeyDegradesGracefully(t *testing.T) {
 
 	// And the ungated collector still works, which is the whole point.
 	if !strings.Contains(output, "spacelift_worker_pool_runs_pending{") {
-		t.Errorf("worker pool metrics should still be collected with a machine key:\n%s", output)
+		t.Errorf("worker pool metrics should still be collected on a gated backend:\n%s", output)
 	}
 }
 

@@ -230,8 +230,6 @@ var serveCommand *cli.Command = &cli.Command{
 		}
 		logger.Infow("Collectors enabled", "collectors", strings.Join(names, ", "))
 
-		warnIfMachineKey(ctx, httpClient, session, logger, collectors)
-
 		// Expose the registered metrics via HTTP.
 		http.Handle("/metrics", newMetricsHandler(reg))
 

@@ -8,11 +8,13 @@
 // under a nullable `metrics`. One erroring field therefore nulls the entire
 // response, so partial success is impossible inside a single selection set.
 //
-// The boundaries follow availability rather than aesthetics. `publicWorkerPool`
-// and `usage` reject machine sessions and `usage` additionally requires read
-// access to the root space, while `workerPools` has no such gate — so a machine
-// key that can serve worker pool metrics perfectly well would, under a single
-// document, produce no metrics at all.
+// The boundaries were drawn along availability. When this split was written,
+// `publicWorkerPool`, `usage` and `metrics` rejected machine sessions while
+// `workerPools` did not, so a machine key that could serve worker pool metrics
+// produced nothing at all under a single document. Spacelift SaaS removed
+// those gates in August 2026 (backend #16058); Self-Hosted releases older than
+// that still have them, and the non-null propagation problem above is
+// unaffected either way.
 package collector
 
 import (

@@ -7,12 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/urfave/cli/v3"
-	"go.uber.org/zap"
 
 	"github.com/spacelift-io/prometheus-exporter/collector"
 )
@@ -154,74 +152,4 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
-}
-
-func TestWarnIfMachineKeySkipsProbeWithoutGatedCollectors(t *testing.T) {
-	var requests atomic.Int32
-	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		requests.Add(1)
-		return nil, errors.New("unexpected request")
-	})}
-
-	warnIfMachineKey(
-		context.Background(),
-		httpClient,
-		&fakeSession{endpoint: "https://unused.invalid/graphql"},
-		zap.NewNop().Sugar(),
-		[]collector.Collector{collector.NewWorkerPools()},
-	)
-
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("machine-key probe requests = %d, want 0", got)
-	}
-}
-
-func TestWarnIfMachineKeyProbesWhenAGatedCollectorIsEnabled(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		collector collector.Collector
-		fixture   string
-		wantField string
-	}{
-		{
-			name:      "aggregates",
-			collector: collector.NewAggregates(),
-			fixture:   "saas",
-			wantField: "metrics",
-		},
-		{
-			name:      "public worker pool",
-			collector: collector.NewPublicWorkerPool(),
-			fixture:   "saas",
-			wantField: "publicWorkerPool",
-		},
-		{
-			name:      "usage",
-			collector: collector.NewUsage(),
-			fixture:   "machine-key",
-			wantField: "usage",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			stub := newGraphQLStub(t, fixture(t, test.fixture))
-			warnIfMachineKey(
-				context.Background(),
-				stub.server.Client(),
-				&fakeSession{endpoint: stub.server.URL},
-				zap.NewNop().Sugar(),
-				[]collector.Collector{test.collector},
-			)
-
-			queries := stub.recordedQueries()
-			if len(queries) != 1 {
-				t.Fatalf("machine-key probe requests = %d, want 1", len(queries))
-			}
-			if operation := operationOf(queries[0]); operation != "PrometheusExporterProbe" {
-				t.Fatalf("machine-key probe operation = %q, want PrometheusExporterProbe", operation)
-			}
-			if fields := topLevelFields(queries[0]); !slices.Equal(fields, []string{test.wantField}) {
-				t.Fatalf("machine-key probe fields = %v, want only %q", fields, test.wantField)
-			}
-		})
-	}
 }

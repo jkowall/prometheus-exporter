@@ -18,10 +18,10 @@ The exporter uses
 to authenticate, and also needs to know your Spacelift account API endpoint. Your API endpoint is in
 the format `https://<account>.app.spacelift.io`, for example `https://my-account.app.spacelift.io`.
 
-For the complete metric set, use a non-machine API key that can read account-level data in the root
-space. Machine API keys can still export private worker-pool metrics when the account-level
-collectors are disabled or `--partial-scrapes` is enabled. In partial mode, those gated collectors
-report `spacelift_scrape_collector_supported=0`.
+Any API key works against current Spacelift SaaS. Self-Hosted releases older than August 2026
+restrict `publicWorkerPool`, `usage` and `metrics` to non-machine keys; on those backends the
+affected collectors report `spacelift_scrape_collector_supported=0` under `--partial-scrapes`, and
+private worker-pool metrics keep working either way.
 
 #### OIDC API keys with rotating secrets
 
