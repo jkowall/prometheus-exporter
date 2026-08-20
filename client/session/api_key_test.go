@@ -131,12 +131,13 @@ func TestBearerTokenRecoversAfterFailedExchange(t *testing.T) {
 	}
 }
 
-// TestRefreshTokenSerializesExplicitRefreshes documents intended behaviour:
-// unlike BearerToken, an explicit RefreshToken always exchanges. Concurrent
-// callers are serialized by the mutex but not coalesced — the exporter calls
-// RefreshToken only from the client's unauthorized-retry path, where each
-// caller has just proven its token invalid.
-func TestRefreshTokenSerializesExplicitRefreshes(t *testing.T) {
+// TestRefreshTokenAlwaysExchanges documents intended behaviour: unlike
+// BearerToken, an explicit RefreshToken always exchanges, even when the token
+// is fresh. The exporter calls it only from the client's unauthorized-retry
+// path, where the caller has just proven its token invalid, so coalescing
+// there would be wrong. The contract is sequential; concurrency adds nothing
+// to it (the shared mutex is covered by TestConcurrentBearerTokenRefreshesOnce).
+func TestRefreshTokenAlwaysExchanges(t *testing.T) {
 	server, calls := newExchangeStub(t, func(int64) (string, int64, int) {
 		return "token", time.Now().Add(time.Hour).Unix(), http.StatusOK
 	})
@@ -146,21 +147,13 @@ func TestRefreshTokenSerializesExplicitRefreshes(t *testing.T) {
 		t.Fatalf("FromAPIKey: %v", err)
 	}
 
-	const goroutines = 8
-
-	var waitGroup sync.WaitGroup
-	waitGroup.Add(goroutines)
-	for range goroutines {
-		go func() {
-			defer waitGroup.Done()
-			if err := session.RefreshToken(context.Background()); err != nil {
-				t.Errorf("RefreshToken: %v", err)
-			}
-		}()
+	for i := range 2 {
+		if err := session.RefreshToken(context.Background()); err != nil {
+			t.Fatalf("RefreshToken %d: %v", i+1, err)
+		}
 	}
-	waitGroup.Wait()
 
-	if got := atomic.LoadInt64(calls); got != 1+goroutines {
-		t.Errorf("token exchange requests = %d, want %d (construction + one per explicit refresh)", got, 1+goroutines)
+	if got := atomic.LoadInt64(calls); got != 3 {
+		t.Errorf("token exchange requests = %d, want 3 (construction + one per explicit refresh)", got)
 	}
 }

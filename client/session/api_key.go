@@ -78,11 +78,7 @@ func (g *apiKey) RefreshToken(ctx context.Context) error {
 	g.refreshMutex.Lock()
 	defer g.refreshMutex.Unlock()
 
-	if err := g.exchange(ctx); err != nil {
-		return err
-	}
-
-	return nil
+	return g.exchange(ctx)
 }
 
 func (g *apiKey) exchange(ctx context.Context) error {

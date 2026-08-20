@@ -41,7 +41,7 @@ func (c *testCollector) Collect(
 	return c.collect(ctx)
 }
 
-func newTestExporter(timeout time.Duration, collectors []Collector, options ...Option) *Exporter {
+func newTestExporter(timeout time.Duration, collectors []Collector, partialScrapes bool) *Exporter {
 	return New(
 		context.Background(),
 		zap.NewNop().Sugar(),
@@ -49,7 +49,7 @@ func newTestExporter(timeout time.Duration, collectors []Collector, options ...O
 		timeout,
 		BuildInfo{},
 		collectors,
-		options...,
+		partialScrapes,
 	)
 }
 
@@ -88,7 +88,7 @@ func TestCollectorsStartConcurrently(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- gatherExporter(newTestExporter(time.Second, collectors))
+		done <- gatherExporter(newTestExporter(time.Second, collectors, false))
 	}()
 
 	for range collectorCount {
@@ -123,7 +123,7 @@ func TestScrapeDeadlineBoundsWholeScrape(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := gatherExporter(newTestExporter(timeout, collectors, WithPartialScrapes()))
+	err := gatherExporter(newTestExporter(timeout, collectors, true))
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -134,50 +134,15 @@ func TestScrapeDeadlineBoundsWholeScrape(t *testing.T) {
 	}
 }
 
-func TestPartialScrapePolicy(t *testing.T) {
-	healthy := newTestCollector("healthy", func(context.Context) ([]prometheus.Metric, error) {
-		return []prometheus.Metric{
-			prometheus.MustNewConstMetric(
-				prometheus.NewDesc("test_healthy", "Test metric", nil, nil),
-				prometheus.GaugeValue,
-				1,
-			),
-		}, nil
-	})
-	failed := newTestCollector("failed", func(context.Context) ([]prometheus.Metric, error) {
-		return nil, errors.New("collector failed")
-	})
-
-	for _, test := range []struct {
-		name          string
-		options       []Option
-		wantGatherErr bool
-	}{
-		{name: "legacy default", wantGatherErr: true},
-		{name: "partial opt-in", options: []Option{WithPartialScrapes()}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			err := gatherExporter(newTestExporter(time.Second, []Collector{healthy, failed}, test.options...))
-			if (err != nil) != test.wantGatherErr {
-				t.Fatalf("Gather() error = %v, want error %t", err, test.wantGatherErr)
-			}
-		})
-	}
-}
-
 func TestUnsupportedCollectorsAreHealthyInPartialMode(t *testing.T) {
 	unsupported := newTestCollector("unsupported", func(context.Context) ([]prometheus.Metric, error) {
 		return nil, ErrNotSupported
 	})
 
-	if err := gatherExporter(newTestExporter(time.Second, []Collector{unsupported})); err == nil {
+	if err := gatherExporter(newTestExporter(time.Second, []Collector{unsupported}, false)); err == nil {
 		t.Fatal("strict mode should preserve the legacy error for an unsupported collector")
 	}
-	if err := gatherExporter(newTestExporter(
-		time.Second,
-		[]Collector{unsupported},
-		WithPartialScrapes(),
-	)); err != nil {
+	if err := gatherExporter(newTestExporter(time.Second, []Collector{unsupported}, true)); err != nil {
 		t.Fatalf("partial mode rejected an unsupported but healthy collector: %v", err)
 	}
 }
@@ -187,7 +152,7 @@ func TestCollectorPanicFailsScrapeInsteadOfCrashingProcess(t *testing.T) {
 		panic("boom")
 	})
 
-	err := gatherExporter(newTestExporter(time.Second, []Collector{panicking}))
+	err := gatherExporter(newTestExporter(time.Second, []Collector{panicking}, false))
 	if err == nil || !strings.Contains(err.Error(), "panicking collector panicked: boom") {
 		t.Fatalf("Gather() error = %v, want recovered collector panic", err)
 	}
@@ -207,7 +172,7 @@ func TestStrictModeGatherErrorNamesTheFailure(t *testing.T) {
 		return nil, errors.New("aggregates: internal error")
 	})
 
-	err := gatherExporter(newTestExporter(time.Second, []Collector{healthy, failed}))
+	err := gatherExporter(newTestExporter(time.Second, []Collector{healthy, failed}, false))
 	if err == nil {
 		t.Fatal("strict mode Gather() succeeded with a failing collector, want the legacy failure contract")
 	}

@@ -21,7 +21,7 @@ type WorkerPools struct {
 }
 
 // NewWorkerPools returns the private worker pool collector.
-func NewWorkerPools() *WorkerPools {
+func NewWorkerPools() Collector {
 	labels := []string{"worker_pool_id", "worker_pool_name"}
 
 	return &WorkerPools{

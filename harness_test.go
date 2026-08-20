@@ -78,53 +78,15 @@ func operationOf(query string) string {
 	return strings.TrimSpace(name)
 }
 
-// topLevelFields returns the root selections of a query document, e.g.
-// ["publicWorkerPool"] for `query X{publicWorkerPool{busyWorkers}}`.
-func topLevelFields(query string) []string {
-	_, body, found := strings.Cut(query, "{")
-	if !found {
-		return nil
-	}
-
-	var fields []string
-	var current strings.Builder
-	depth := 0
-
-	for _, r := range body {
-		switch {
-		case r == '{':
-			depth++
-			if depth == 1 {
-				// Everything accumulated so far names the
-				// field whose selection set just opened.
-				fields = appendField(fields, current.String())
-				current.Reset()
-			}
-		case r == '}':
-			depth--
-			if depth < 0 {
-				// Closing brace of the operation itself.
-				return appendField(fields, current.String())
-			}
-		case depth == 0 && r == ',':
-			fields = appendField(fields, current.String())
-			current.Reset()
-		case depth == 0:
-			current.WriteRune(r)
-		}
-	}
-
-	return appendField(fields, current.String())
-}
-
-func appendField(fields []string, name string) []string {
-	// Strip any argument list, e.g. recentStacks(states: [...]).
-	name, _, _ = strings.Cut(name, "(")
-	if name = strings.TrimSpace(name); name != "" {
-		fields = append(fields, name)
-	}
-
-	return fields
+// operationRootFields maps each collector's GraphQL operation name to the
+// single root field it selects, so the stub can serve the right slice of a
+// whole-account fixture the way a real server would. A new collector adds one
+// entry; TestQueryShape fails if a query arrives under an unknown name.
+var operationRootFields = map[string]string{
+	"PrometheusExporterAggregates":       "metrics",
+	"PrometheusExporterPublicWorkerPool": "publicWorkerPool",
+	"PrometheusExporterUsage":            "usage",
+	"PrometheusExporterWorkerPools":      "workerPools",
 }
 
 // projectFixture narrows a whole-account fixture to the fields one collector
@@ -134,7 +96,7 @@ func appendField(fields []string, name string) []string {
 // and lets one file cover every collector. But the GraphQL decoder rejects any
 // response field the query did not select, so the stub has to do the narrowing
 // that a real server does.
-func projectFixture(t *testing.T, response string, fields []string) string {
+func projectFixture(t *testing.T, response string, field string) string {
 	t.Helper()
 
 	var envelope struct {
@@ -149,11 +111,9 @@ func projectFixture(t *testing.T, response string, fields []string) string {
 
 	var projected map[string]json.RawMessage
 	if envelope.Data != nil {
-		projected = make(map[string]json.RawMessage, len(fields))
-		for _, field := range fields {
-			if value, ok := envelope.Data[field]; ok {
-				projected[field] = value
-			}
+		projected = make(map[string]json.RawMessage, 1)
+		if value, ok := envelope.Data[field]; ok {
+			projected[field] = value
 		}
 	}
 
@@ -194,10 +154,10 @@ func newGraphQLStub(t *testing.T, response string) *graphqlStub {
 		stub.mutex.Unlock()
 
 		response := stub.response
-		if override, ok := stub.overrides[operationOf(envelope.Query)]; ok {
+		if override, ok := stub.overrides[envelope.OperationName]; ok {
 			response = override
 		} else {
-			response = projectFixture(t, response, topLevelFields(envelope.Query))
+			response = projectFixture(t, response, operationRootFields[envelope.OperationName])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -227,10 +187,7 @@ func (s *graphqlStub) collectorWithPartialScrapes(t *testing.T, partialScrapes b
 
 	ctx := logging.Init(context.Background(), true)
 
-	collectors, err := newCollectors(nil)
-	if err != nil {
-		t.Fatalf("newCollectors: %v", err)
-	}
+	collectors := newCollectors(nil)
 
 	exporter, err := newExporter(
 		ctx,
@@ -276,19 +233,6 @@ func fqName(t *testing.T, desc string) string {
 	}
 
 	return match[1]
-}
-
-// lastQuery returns the most recent GraphQL query body, with runs of
-// whitespace collapsed so assertions can be written readably.
-func (s *graphqlStub) lastQuery(t *testing.T) string {
-	t.Helper()
-
-	queries := s.recordedQueries()
-	if len(queries) == 0 {
-		t.Fatal("no GraphQL queries were recorded")
-	}
-
-	return regexp.MustCompile(`\s+`).ReplaceAllString(queries[len(queries)-1], " ")
 }
 
 // gather registers the collector on a pedantic registry (which validates

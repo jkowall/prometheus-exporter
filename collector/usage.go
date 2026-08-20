@@ -27,7 +27,7 @@ type Usage struct {
 }
 
 // NewUsage returns the billing usage collector.
-func NewUsage() *Usage {
+func NewUsage() Collector {
 	return &Usage{
 		periodStart: prometheus.NewDesc(
 			"spacelift_current_billing_period_start_timestamp_seconds",

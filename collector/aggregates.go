@@ -24,7 +24,7 @@ type Aggregates struct {
 }
 
 // NewAggregates returns the account-wide aggregates collector.
-func NewAggregates() *Aggregates {
+func NewAggregates() Collector {
 	return &Aggregates{
 		stacksCountByState: prometheus.NewDesc(
 			"spacelift_current_stacks_count_by_state",

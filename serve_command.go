@@ -163,11 +163,7 @@ var serveCommand *cli.Command = &cli.Command{
 			return cli.Exit(fmt.Sprintf("api-endpoint %q does not seem to be a valid URL", apiEndpoint), ExitCodeStartupError)
 		}
 
-		collectors, err := newCollectors(collectorSelection(cmd))
-		if err != nil {
-			return cli.Exit(err.Error(), ExitCodeStartupError)
-		}
-
+		collectors := newCollectors(collectorSelection(cmd))
 		if len(collectors) == 0 {
 			return cli.Exit("every collector is disabled, so there would be nothing to export", ExitCodeStartupError)
 		}

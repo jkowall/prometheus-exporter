@@ -69,7 +69,14 @@ type recordedRequest struct {
 	operationName string
 }
 
-func TestQueryRetryUsesRefreshedAuthorizationAndPreservesOperationName(t *testing.T) {
+// newRecordingServer is the GraphQL stand-in shared by the retry tests. It
+// records every request's Authorization header and envelope operationName,
+// answers "Bearer stale" with an unauthorized error (after calling onStale, if
+// given, so a test can synchronize concurrent stale requests), and anything
+// else with a viewer payload.
+func newRecordingServer(t *testing.T, onStale func()) (*httptest.Server, func() []recordedRequest) {
+	t.Helper()
+
 	var mutex sync.Mutex
 	var requests []recordedRequest
 
@@ -92,12 +99,28 @@ func TestQueryRetryUsesRefreshedAuthorizationAndPreservesOperationName(t *testin
 
 		w.Header().Set("Content-Type", "application/json")
 		if authorization == "Bearer stale" {
+			if onStale != nil {
+				onStale()
+			}
 			_, _ = fmt.Fprint(w, `{"errors":[{"message":"unauthorized"}]}`)
 			return
 		}
 		_, _ = fmt.Fprint(w, `{"data":{"viewer":{"id":"viewer"}}}`)
 	}))
 	t.Cleanup(server.Close)
+
+	recorded := func() []recordedRequest {
+		mutex.Lock()
+		defer mutex.Unlock()
+
+		return append([]recordedRequest(nil), requests...)
+	}
+
+	return server, recorded
+}
+
+func TestQueryRetryUsesRefreshedAuthorizationAndPreservesOperationName(t *testing.T) {
+	server, recorded := newRecordingServer(t, nil)
 
 	session := &retrySession{endpoint: server.URL, token: "stale"}
 	var query struct {
@@ -112,14 +135,11 @@ func TestQueryRetryUsesRefreshedAuthorizationAndPreservesOperationName(t *testin
 		t.Fatalf("QueryNamed() error = %v", err)
 	}
 
-	mutex.Lock()
-	gotRequests := append([]recordedRequest(nil), requests...)
-	mutex.Unlock()
 	wantRequests := []recordedRequest{
 		{authorization: "Bearer stale", operationName: "PrometheusExporterWorkerPools"},
 		{authorization: "Bearer fresh", operationName: "PrometheusExporterWorkerPools"},
 	}
-	if !reflect.DeepEqual(gotRequests, wantRequests) {
+	if gotRequests := recorded(); !reflect.DeepEqual(gotRequests, wantRequests) {
 		t.Fatalf("requests = %#v, want %#v", gotRequests, wantRequests)
 	}
 	if session.refreshes() != 1 {
@@ -135,35 +155,10 @@ func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
 
 	staleArrived := make(chan struct{}, queryCount)
 	releaseStale := make(chan struct{})
-	var mutex sync.Mutex
-	var requests []recordedRequest
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			OperationName string `json:"operationName"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Errorf("decoding request: %v", err)
-			return
-		}
-
-		authorization := r.Header.Get("Authorization")
-		mutex.Lock()
-		requests = append(requests, recordedRequest{
-			authorization: authorization,
-			operationName: envelope.OperationName,
-		})
-		mutex.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		if authorization == "Bearer stale" {
-			staleArrived <- struct{}{}
-			<-releaseStale
-			_, _ = fmt.Fprint(w, `{"errors":[{"message":"unauthorized"}]}`)
-			return
-		}
-		_, _ = fmt.Fprint(w, `{"data":{"viewer":{"id":"viewer"}}}`)
-	}))
-	t.Cleanup(server.Close)
+	server, recorded := newRecordingServer(t, func() {
+		staleArrived <- struct{}{}
+		<-releaseStale
+	})
 
 	session := &retrySession{endpoint: server.URL, token: "stale"}
 	api := client.NewNamed(server.Client(), session)
@@ -203,9 +198,7 @@ func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
 	if session.refreshes() != 1 {
 		t.Fatalf("RefreshToken() calls = %d, want 1", session.refreshes())
 	}
-	mutex.Lock()
-	gotRequests := append([]recordedRequest(nil), requests...)
-	mutex.Unlock()
+	gotRequests := recorded()
 	if len(gotRequests) != 2*queryCount {
 		t.Fatalf("HTTP requests = %d, want %d", len(gotRequests), 2*queryCount)
 	}
@@ -228,47 +221,8 @@ func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestLegacyQueryUsesStableOperationName(t *testing.T) {
-	operationName := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			OperationName string `json:"operationName"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Errorf("decoding request: %v", err)
-			return
-		}
-		operationName <- envelope.OperationName
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"data":{"viewer":{"id":"viewer"}}}`)
-	}))
-	t.Cleanup(server.Close)
-
-	session := &retrySession{endpoint: server.URL, token: "fresh"}
-	var query struct {
-		Viewer struct {
-			ID graphql.ID
-		}
-	}
-	if err := client.New(server.Client(), session).Query(context.Background(), &query, nil); err != nil {
-		t.Fatalf("Query() error = %v", err)
-	}
-	if got := <-operationName; got != "PrometheusExporter" {
-		t.Fatalf("operation name = %q, want PrometheusExporter", got)
-	}
-}
-
 func TestQueryReturnsRefreshFailureWithoutRetrying(t *testing.T) {
-	var mutex sync.Mutex
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mutex.Lock()
-		requests++
-		mutex.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"errors":[{"message":"unauthorized"}]}`)
-	}))
-	t.Cleanup(server.Close)
+	server, recorded := newRecordingServer(t, nil)
 
 	refreshErr := errors.New("credential exchange failed")
 	session := &retrySession{
@@ -280,14 +234,18 @@ func TestQueryReturnsRefreshFailureWithoutRetrying(t *testing.T) {
 		Viewer struct{ ID graphql.ID }
 	}
 
+	// The legacy three-argument Query is used deliberately: it must keep the
+	// bare "PrometheusExporter" operation name so existing APM attribution
+	// stays stable for anyone still on that API.
 	err := client.New(server.Client(), session).Query(context.Background(), &query, nil)
 	if err == nil || !strings.Contains(err.Error(), refreshErr.Error()) {
 		t.Fatalf("Query() error = %v, want refresh failure", err)
 	}
-	mutex.Lock()
-	gotRequests := requests
-	mutex.Unlock()
-	if gotRequests != 1 {
-		t.Fatalf("HTTP requests = %d, want 1", gotRequests)
+	gotRequests := recorded()
+	if len(gotRequests) != 1 {
+		t.Fatalf("HTTP requests = %d, want 1", len(gotRequests))
+	}
+	if got := gotRequests[0].operationName; got != "PrometheusExporter" {
+		t.Fatalf("legacy operation name = %q, want PrometheusExporter", got)
 	}
 }

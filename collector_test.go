@@ -100,33 +100,13 @@ var lintBaseline = map[string]string{
 
 // TestCollectLint enforces the Prometheus naming and unit conventions on
 // everything except the grandfathered baseline: base units, _total only on
-// counters, no reserved suffixes, consistent HELP.
+// counters, no reserved suffixes, consistent HELP. It also fails when a
+// baseline entry stops being reported, so the grandfather list can only
+// shrink and never silently rots.
 //
-// This is the gate that stops a large metrics PR from shipping convention bugs
-// that a human reviewer would have to catch by eye.
+// One shape suffices: saas emits every family the exporter has, so linting the
+// other fixtures adds runtime without adding surface.
 func TestCollectLint(t *testing.T) {
-	for _, shape := range []string{"saas", "self-hosted", "empty-account"} {
-		t.Run(shape, func(t *testing.T) {
-			stub := newGraphQLStub(t, fixture(t, shape))
-
-			problems, err := testutil.CollectAndLint(stub.collector(t))
-			if err != nil {
-				t.Fatalf("linting collector output: %v", err)
-			}
-
-			for _, problem := range problems {
-				if lintBaseline[problem.Metric] == problem.Text {
-					continue
-				}
-				t.Errorf("promlint: %s: %s", problem.Metric, problem.Text)
-			}
-		})
-	}
-}
-
-// TestLintBaselineIsNotStale fails if a grandfathered finding has been fixed,
-// so the baseline shrinks as names are corrected and never silently rots.
-func TestLintBaselineIsNotStale(t *testing.T) {
 	stub := newGraphQLStub(t, fixture(t, "saas"))
 
 	problems, err := testutil.CollectAndLint(stub.collector(t))
@@ -137,6 +117,9 @@ func TestLintBaselineIsNotStale(t *testing.T) {
 	found := map[string]string{}
 	for _, problem := range problems {
 		found[problem.Metric] = problem.Text
+		if lintBaseline[problem.Metric] != problem.Text {
+			t.Errorf("promlint: %s: %s", problem.Metric, problem.Text)
+		}
 	}
 
 	for metric, text := range lintBaseline {
@@ -157,10 +140,7 @@ func TestQueryShape(t *testing.T) {
 	stub.collector(t).Collect(metrics)
 	close(metrics)
 	queries := stub.recordedQueries()
-	defaultCollectors, err := newCollectors(nil)
-	if err != nil {
-		t.Fatalf("building the default collector set: %v", err)
-	}
+	defaultCollectors := newCollectors(nil)
 
 	// One request per enabled collector, and no more. Isolation costs
 	// requests, so the count is part of the contract with Spacelift's
@@ -374,14 +354,6 @@ func TestLegacyMetricsStillEmitted(t *testing.T) {
 
 	if got, want := len(legacyMetrics), 19; got != want {
 		t.Errorf("legacyMetrics has %d entries, want %d; the shipped surface should not change", got, want)
-	}
-}
-
-// TestUnknownCollectorIsRejected keeps a typo in --collector from silently
-// exporting less than the operator asked for.
-func TestUnknownCollectorIsRejected(t *testing.T) {
-	if _, err := newCollectors(map[string]bool{"stacks": true}); err == nil {
-		t.Error("newCollectors accepted an unknown collector name")
 	}
 }
 

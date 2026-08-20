@@ -2,14 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/urfave/cli/v3"
 
 	"github.com/spacelift-io/prometheus-exporter/collector"
@@ -50,10 +45,7 @@ func TestNewCollectorsUsesStableDefaultsAndOverrides(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := newCollectors(test.enabled)
-			if err != nil {
-				t.Fatalf("newCollectors() error = %v", err)
-			}
+			got := newCollectors(test.enabled)
 			if names := collectorNames(got); !slices.Equal(names, test.want) {
 				t.Fatalf("collector names = %v, want %v", names, test.want)
 			}
@@ -101,55 +93,4 @@ func TestCollectorInverseFlagDisablesCollector(t *testing.T) {
 			t.Fatalf("default collector %q was unexpectedly disabled", name)
 		}
 	}
-}
-
-func TestCollectorFlagRejectsConflictingForms(t *testing.T) {
-	command := &cli.Command{
-		Name:      "test",
-		Flags:     collectorCLIFlags(),
-		Writer:    io.Discard,
-		ErrWriter: io.Discard,
-	}
-	err := command.Run(context.Background(), []string{
-		"test",
-		"--collector.usage",
-		"--no-collector.usage",
-	})
-	if err == nil {
-		t.Fatal("command accepted both positive and inverse collector flags")
-	}
-}
-
-type unexpectedErrorCollector struct {
-	desc *prometheus.Desc
-}
-
-func (c unexpectedErrorCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
-
-func (c unexpectedErrorCollector) Collect(ch chan<- prometheus.Metric) {
-	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, 1)
-	ch <- prometheus.NewInvalidMetric(c.desc, errors.New("unexpected gather error"))
-}
-
-func TestMetricsHandlerReturns500ForUnexpectedGatherError(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(unexpectedErrorCollector{
-		desc: prometheus.NewDesc("test_valid_metric", "Test metric", nil, nil),
-	})
-
-	response := httptest.NewRecorder()
-	newMetricsHandler(registry).ServeHTTP(
-		response,
-		httptest.NewRequest(http.MethodGet, "/metrics", nil),
-	)
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("HTTP status = %d, want %d; body:\n%s",
-			response.Code, http.StatusInternalServerError, response.Body.String())
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
 }

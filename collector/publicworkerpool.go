@@ -24,7 +24,7 @@ type PublicWorkerPool struct {
 }
 
 // NewPublicWorkerPool returns the public worker pool collector.
-func NewPublicWorkerPool() *PublicWorkerPool {
+func NewPublicWorkerPool() Collector {
 	return &PublicWorkerPool{
 		runsPending: prometheus.NewDesc(
 			"spacelift_public_worker_pool_runs_pending",

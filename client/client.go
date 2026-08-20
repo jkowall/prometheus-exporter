@@ -37,7 +37,7 @@ func NewNamed(wraps *http.Client, session session.Session) NamedClient {
 }
 
 func (c *client) Query(ctx context.Context, query interface{}, variables map[string]interface{}) error {
-	return c.query(ctx, query, variables, graphql.OperationName(operationPrefix))
+	return c.QueryNamed(ctx, query, variables, "")
 }
 
 func (c *client) QueryNamed(
@@ -46,15 +46,7 @@ func (c *client) QueryNamed(
 	variables map[string]interface{},
 	operation string,
 ) error {
-	return c.query(ctx, query, variables, graphql.OperationName(operationPrefix+operation))
-}
-
-func (c *client) query(
-	ctx context.Context,
-	query interface{},
-	variables map[string]interface{},
-	name graphql.Option,
-) error {
+	name := graphql.OperationName(operationPrefix + operation)
 	logger := logging.FromContext(ctx).Sugar()
 	apiClient, token, err := c.apiClient(ctx)
 	if err != nil {

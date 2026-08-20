@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/spacelift-io/prometheus-exporter/client"
@@ -25,35 +23,17 @@ type collectorSpec struct {
 // output remain stable. A deployment- or tier-specific collector should be off
 // by default so unsupported deployments do not report it permanently.
 var collectorSpecs = []collectorSpec{
-	{name: "aggregates", defaultEnabled: true, build: func() collector.Collector {
-		return collector.NewAggregates()
-	}},
-	{name: "publicworkerpool", defaultEnabled: true, build: func() collector.Collector {
-		return collector.NewPublicWorkerPool()
-	}},
-	{name: "usage", defaultEnabled: true, build: func() collector.Collector {
-		return collector.NewUsage()
-	}},
-	{name: "workerpools", defaultEnabled: true, build: func() collector.Collector {
-		return collector.NewWorkerPools()
-	}},
+	{name: "aggregates", defaultEnabled: true, build: collector.NewAggregates},
+	{name: "publicworkerpool", defaultEnabled: true, build: collector.NewPublicWorkerPool},
+	{name: "usage", defaultEnabled: true, build: collector.NewUsage},
+	{name: "workerpools", defaultEnabled: true, build: collector.NewWorkerPools},
 }
 
-// newCollectors builds the enabled collector set.
-func newCollectors(enabled map[string]bool) ([]collector.Collector, error) {
-	available := make(map[string]collectorSpec, len(collectorSpecs))
-	names := make([]string, 0, len(collectorSpecs))
-	for _, spec := range collectorSpecs {
-		available[spec.name] = spec
-		names = append(names, spec.name)
-	}
-
-	for name := range enabled {
-		if _, ok := available[name]; !ok {
-			return nil, fmt.Errorf("unknown collector %q, expected one of: %s", name, strings.Join(names, ", "))
-		}
-	}
-
+// newCollectors builds the enabled collector set. Unknown names in the map are
+// ignored: the only production caller derives its keys from collectorSpecs
+// itself, and a mistyped --collector.<name> flag is rejected by the CLI before
+// this runs.
+func newCollectors(enabled map[string]bool) []collector.Collector {
 	// Emit in a stable order so that /metrics output does not shuffle
 	// between scrapes.
 	out := make([]collector.Collector, 0, len(collectorSpecs))
@@ -68,7 +48,7 @@ func newCollectors(enabled map[string]bool) ([]collector.Collector, error) {
 		}
 	}
 
-	return out, nil
+	return out
 }
 
 // newExporter assembles the exporter. It performs no I/O, so constructing one
@@ -86,11 +66,6 @@ func newExporter(
 		return nil, errors.New("could not read build info")
 	}
 
-	options := []collector.Option(nil)
-	if partialScrapes {
-		options = append(options, collector.WithPartialScrapes())
-	}
-
 	return collector.New(
 		ctx,
 		logging.FromContext(ctx).Sugar(),
@@ -98,6 +73,6 @@ func newExporter(
 		scrapeTimeout,
 		collector.BuildInfo{Version: version, Commit: commit, GoVersion: info.GoVersion},
 		collectors,
-		options...,
+		partialScrapes,
 	), nil
 }

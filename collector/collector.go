@@ -75,19 +75,11 @@ type BuildInfo struct {
 	GoVersion string
 }
 
-// Option configures an Exporter.
-type Option func(*Exporter)
-
-// WithPartialScrapes returns available metrics unless every supported
-// collector fails. Without this option, any collector error or unsupported
-// result preserves the legacy HTTP 500 behavior.
-func WithPartialScrapes() Option {
-	return func(e *Exporter) {
-		e.partialScrapes = true
-	}
-}
-
 // New returns an Exporter over the given collectors.
+//
+// partialScrapes, when true, returns available metrics unless every supported
+// collector fails. When false, any collector error or unsupported result
+// preserves the legacy HTTP 500 behavior.
 func New(
 	ctx context.Context,
 	logger *zap.SugaredLogger,
@@ -95,14 +87,15 @@ func New(
 	scrapeTimeout time.Duration,
 	build BuildInfo,
 	collectors []Collector,
-	options ...Option,
+	partialScrapes bool,
 ) *Exporter {
-	exporter := &Exporter{
-		ctx:           ctx,
-		logger:        logger,
-		client:        c,
-		scrapeTimeout: scrapeTimeout,
-		collectors:    collectors,
+	return &Exporter{
+		ctx:            ctx,
+		logger:         logger,
+		client:         c,
+		scrapeTimeout:  scrapeTimeout,
+		collectors:     collectors,
+		partialScrapes: partialScrapes,
 
 		collectorSuccess: prometheus.NewDesc(
 			"spacelift_scrape_collector_success",
@@ -146,12 +139,6 @@ func New(
 			nil,
 			nil),
 	}
-
-	for _, option := range options {
-		option(exporter)
-	}
-
-	return exporter
 }
 
 // Describe implements prometheus.Collector.
@@ -214,21 +201,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				"collector", result.collector.Name(),
 			)
 			scrapeIssues = append(scrapeIssues, result.err)
-		case errors.Is(result.err, context.DeadlineExceeded):
-			success = 0
-			failedCollectors++
-			e.logger.Errorw(
-				"Collector timed out querying the Spacelift API",
-				"collector", result.collector.Name(),
-				"timeout", e.scrapeTimeout,
-			)
-			scrapeIssues = append(scrapeIssues, result.err)
 		case result.err != nil:
 			success = 0
 			failedCollectors++
 			e.logger.Errorw(
 				"Collector failed",
 				"collector", result.collector.Name(),
+				"timeout", e.scrapeTimeout,
 				zap.Error(result.err),
 			)
 			scrapeIssues = append(scrapeIssues, result.err)
@@ -272,7 +251,6 @@ func (e *Exporter) collect(ctx context.Context, c Collector) (result collectionR
 	defer func() {
 		result.duration = time.Since(start)
 		if recovered := recover(); recovered != nil {
-			result.metrics = nil
 			result.err = fmt.Errorf("%s collector panicked: %v", c.Name(), recovered)
 		}
 	}()
