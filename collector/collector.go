@@ -196,7 +196,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		switch {
 		case errors.Is(result.err, ErrNotSupported):
 			supported = 0
-			e.logger.Debugw(
+			logUnsupported := e.logger.Debugw
+			if !e.partialScrapes {
+				logUnsupported = e.logger.Errorw
+			}
+			logUnsupported(
 				"Collector is not supported on this deployment",
 				"collector", result.collector.Name(),
 			)

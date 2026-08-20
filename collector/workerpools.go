@@ -10,9 +10,10 @@ import (
 
 // WorkerPools collects per-pool worker metrics.
 //
-// Unlike publicWorkerPool and usage, the workerPools resolver has no
-// machine-session gate, so this collector works with an API key that cannot
-// read either of those.
+// The workerPools resolver has no machine-session gate, including on older
+// Self-Hosted releases that reject machine sessions for publicWorkerPool and
+// usage. Subject to normal permissions, this collector remains available when
+// those collectors do not.
 type WorkerPools struct {
 	runsPending    *prometheus.Desc
 	workersBusy    *prometheus.Desc

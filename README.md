@@ -18,10 +18,16 @@ The exporter uses
 to authenticate, and also needs to know your Spacelift account API endpoint. Your API endpoint is in
 the format `https://<account>.app.spacelift.io`, for example `https://my-account.app.spacelift.io`.
 
-Any API key works against current Spacelift SaaS. Self-Hosted releases older than August 2026
-restrict `publicWorkerPool`, `usage` and `metrics` to non-machine keys; on those backends the
-affected collectors report `spacelift_scrape_collector_supported=0` under `--partial-scrapes`, and
-private worker-pool metrics keep working either way.
+On current Spacelift SaaS, an API key needs read access to the root space to use every default
+collector. A key without that access cannot use the `usage` collector; grant root-space read,
+disable it with `--no-collector.usage`, or use `--partial-scrapes` to retain metrics from the other
+collectors.
+
+Self-Hosted releases older than August 2026 also restrict `publicWorkerPool`, `usage` and `metrics`
+to non-machine keys. With `--partial-scrapes`, the affected collectors report
+`spacelift_scrape_collector_supported=0` and private worker-pool metrics remain available. In the
+default strict mode, any unsupported collector makes the whole scrape return HTTP 500, so disable
+the affected collectors if you need to retain private worker-pool metrics with a machine key.
 
 #### OIDC API keys with rotating secrets
 

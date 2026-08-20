@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,11 +29,12 @@ func (legacyClient) Query(context.Context, interface{}, map[string]interface{}) 
 var _ client.Client = legacyClient{}
 
 type retrySession struct {
-	mutex        sync.Mutex
-	endpoint     string
-	token        string
-	refreshCount int
-	refreshErr   error
+	mutex          sync.Mutex
+	endpoint       string
+	token          string
+	refreshedToken string
+	refreshCount   int
+	refreshErr     error
 }
 
 func (s *retrySession) BearerToken(context.Context) (string, error) {
@@ -52,7 +54,11 @@ func (s *retrySession) RefreshToken(context.Context) error {
 	if s.refreshErr != nil {
 		return s.refreshErr
 	}
-	s.token = "fresh"
+	if s.refreshedToken == "" {
+		s.token = "fresh"
+	} else {
+		s.token = s.refreshedToken
+	}
 
 	return nil
 }
@@ -150,17 +156,24 @@ func TestQueryRetryUsesRefreshedAuthorizationAndPreservesOperationName(t *testin
 	}
 }
 
-func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
-	const queryCount = 4
+func runConcurrentUnauthorizedWave(
+	t *testing.T,
+	session *retrySession,
+	queryCount int,
+) (client.NamedClient, func() []recordedRequest, []error) {
+	t.Helper()
 
 	staleArrived := make(chan struct{}, queryCount)
 	releaseStale := make(chan struct{})
+	var staleResponses int64
 	server, recorded := newRecordingServer(t, func() {
-		staleArrived <- struct{}{}
-		<-releaseStale
+		if atomic.AddInt64(&staleResponses, 1) <= int64(queryCount) {
+			staleArrived <- struct{}{}
+			<-releaseStale
+		}
 	})
 
-	session := &retrySession{endpoint: server.URL, token: "stale"}
+	session.endpoint = server.URL
 	api := client.NewNamed(server.Client(), session)
 	errorsByQuery := make(chan error, queryCount)
 	var waitGroup sync.WaitGroup
@@ -189,7 +202,20 @@ func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
 	close(releaseStale)
 	waitGroup.Wait()
 	close(errorsByQuery)
+	errs := make([]error, 0, queryCount)
 	for err := range errorsByQuery {
+		errs = append(errs, err)
+	}
+
+	return api, recorded, errs
+}
+
+func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
+	const queryCount = 4
+
+	session := &retrySession{token: "stale"}
+	_, recorded, errs := runConcurrentUnauthorizedWave(t, session, queryCount)
+	for _, err := range errs {
 		if err != nil {
 			t.Errorf("QueryNamed() error = %v", err)
 		}
@@ -218,6 +244,60 @@ func TestConcurrentUnauthorizedResponsesRefreshOnlyOnce(t *testing.T) {
 	}
 	if stale != queryCount || fresh != queryCount {
 		t.Fatalf("request tokens: stale=%d fresh=%d, want %d each", stale, fresh, queryCount)
+	}
+}
+
+func TestConcurrentUnauthorizedResponsesShareRefreshResult(t *testing.T) {
+	const queryCount = 4
+
+	tests := []struct {
+		name         string
+		session      *retrySession
+		wantErr      string
+		wantRequests int
+	}{
+		{
+			name:         "byte-identical token",
+			session:      &retrySession{token: "stale", refreshedToken: "stale"},
+			wantErr:      "unauthorized",
+			wantRequests: 2 * queryCount,
+		},
+		{
+			name:         "ordinary failure",
+			session:      &retrySession{token: "stale", refreshErr: errors.New("credential exchange failed")},
+			wantErr:      "credential exchange failed",
+			wantRequests: queryCount,
+		},
+		{
+			name:         "internal deadline",
+			session:      &retrySession{token: "stale", refreshErr: fmt.Errorf("HTTP client timeout: %w", context.DeadlineExceeded)},
+			wantErr:      context.DeadlineExceeded.Error(),
+			wantRequests: queryCount,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api, recorded, errs := runConcurrentUnauthorizedWave(t, test.session, queryCount)
+			for _, err := range errs {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Errorf("QueryNamed() error = %v, want error containing %q", err, test.wantErr)
+				}
+			}
+			if test.session.refreshes() != 1 {
+				t.Fatalf("RefreshToken() calls = %d, want 1 for the concurrent wave", test.session.refreshes())
+			}
+			if got := len(recorded()); got != test.wantRequests {
+				t.Fatalf("HTTP requests = %d, want %d", got, test.wantRequests)
+			}
+
+			var query struct {
+				Viewer struct{ ID graphql.ID }
+			}
+			_ = api.QueryNamed(context.Background(), &query, nil, "WorkerPools")
+			if test.session.refreshes() != 2 {
+				t.Fatalf("RefreshToken() calls after a later request = %d, want 2", test.session.refreshes())
+			}
+		})
 	}
 }
 

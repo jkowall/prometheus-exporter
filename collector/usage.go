@@ -15,9 +15,10 @@ const secondsPerMinute = 60
 
 // Usage collects billing period usage.
 //
-// The usage resolver rejects machine sessions and additionally requires read
-// access to the root space, so it is the most restricted collector here and
-// gets its own document accordingly.
+// Current Spacelift SaaS allows machine sessions but requires read access to
+// the root space. Self-Hosted releases older than August 2026 also reject
+// machine sessions. This makes usage the most restricted collector here, so it
+// gets its own document.
 type Usage struct {
 	periodStart        *prometheus.Desc
 	periodEnd          *prometheus.Desc

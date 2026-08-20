@@ -11,9 +11,10 @@ import (
 // PublicWorkerPool collects metrics for the shared public worker pool.
 //
 // This is a separate collector from WorkerPools, despite the two being adjacent
-// in the API and having been in the same query, because their availability
-// differs: publicWorkerPool rejects machine sessions and workerPools does not.
-// Sharing a document means a machine key produces neither.
+// in the API and having been in the same query, because their availability can
+// differ. Self-Hosted releases older than August 2026 reject machine sessions
+// for publicWorkerPool but not workerPools; sharing a document on those
+// backends means a machine key produces neither.
 //
 // Self-hosted accounts have no public worker pool, so the values are all zero
 // there.

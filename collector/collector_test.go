@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/spacelift-io/prometheus-exporter/client"
 )
@@ -144,6 +145,46 @@ func TestUnsupportedCollectorsAreHealthyInPartialMode(t *testing.T) {
 	}
 	if err := gatherExporter(newTestExporter(time.Second, []Collector{unsupported}, true)); err != nil {
 		t.Fatalf("partial mode rejected an unsupported but healthy collector: %v", err)
+	}
+}
+
+func TestUnsupportedCollectorLoggingMatchesScrapeMode(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		partialScrapes bool
+	}{
+		{name: "strict"},
+		{name: "partial", partialScrapes: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			unsupported := newTestCollector("unsupported", func(context.Context) ([]prometheus.Metric, error) {
+				return nil, ErrNotSupported
+			})
+			exporter := New(
+				context.Background(),
+				zap.New(core).Sugar(),
+				nil,
+				time.Second,
+				BuildInfo{},
+				[]Collector{unsupported},
+				test.partialScrapes,
+			)
+
+			_ = gatherExporter(exporter)
+
+			entries := logs.FilterMessage("Collector is not supported on this deployment").All()
+			if len(entries) != 1 {
+				t.Fatalf("unsupported collector log entries = %d, want 1", len(entries))
+			}
+			wantLevel := zap.ErrorLevel
+			if test.partialScrapes {
+				wantLevel = zap.DebugLevel
+			}
+			if got, want := entries[0].Level, wantLevel; got != want {
+				t.Fatalf("unsupported collector log level = %s, want %s", got, want)
+			}
+		})
 	}
 }
 
