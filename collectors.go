@@ -47,6 +47,18 @@ func newCollectors(enabled map[string]bool) []collector.Collector {
 	return out
 }
 
+// withCacheTTLs wraps each collector that has a positive TTL in ttls, keyed by
+// collector name, so that it queries the API at most once per TTL. Collectors
+// absent from ttls, or with a TTL of zero, are returned as they are.
+func withCacheTTLs(collectors []collector.Collector, ttls map[string]time.Duration) []collector.Collector {
+	out := make([]collector.Collector, 0, len(collectors))
+	for _, c := range collectors {
+		out = append(out, collector.WithCacheTTL(c, ttls[c.Name()]))
+	}
+
+	return out
+}
+
 // newExporter assembles the exporter over the given collectors. It performs no
 // I/O, so constructing one in a test does not issue a query.
 func newExporter(

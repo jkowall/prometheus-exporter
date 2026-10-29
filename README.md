@@ -168,9 +168,13 @@ OPTIONS:
    --scrape-timeout value, -t value  The maximum duration to wait for a response from the Spacelift API during scraping (default: 5s) [$SPACELIFT_PROMEX_SCRAPE_TIMEOUT]
    --partial-scrapes                 Serve the metrics of the collectors that succeeded when another collector fails, instead of failing the whole scrape. A scrape in which no collector succeeds still returns HTTP 500 (default: false) [$SPACELIFT_PROMEX_PARTIAL_SCRAPES]
    --[no-]collector.publicworkerpool Enable the publicworkerpool collector (default: true) [$SPACELIFT_PROMEX_COLLECTOR_PUBLICWORKERPOOL]
+   --collector.publicworkerpool.cache-ttl value Query the API for the publicworkerpool collector at most once per this duration, serving the last outcome to scrapes in between. 0 queries on every scrape (default: 0s) [$SPACELIFT_PROMEX_COLLECTOR_PUBLICWORKERPOOL_CACHE_TTL]
    --[no-]collector.workerpools      Enable the workerpools collector (default: true) [$SPACELIFT_PROMEX_COLLECTOR_WORKERPOOLS]
+   --collector.workerpools.cache-ttl value Query the API for the workerpools collector at most once per this duration, serving the last outcome to scrapes in between. 0 queries on every scrape (default: 0s) [$SPACELIFT_PROMEX_COLLECTOR_WORKERPOOLS_CACHE_TTL]
    --[no-]collector.usage            Enable the usage collector (default: true) [$SPACELIFT_PROMEX_COLLECTOR_USAGE]
+   --collector.usage.cache-ttl value  Query the API for the usage collector at most once per this duration, serving the last outcome to scrapes in between. 0 queries on every scrape (default: 0s) [$SPACELIFT_PROMEX_COLLECTOR_USAGE_CACHE_TTL]
    --[no-]collector.aggregates       Enable the aggregates collector (default: true) [$SPACELIFT_PROMEX_COLLECTOR_AGGREGATES]
+   --collector.aggregates.cache-ttl value Query the API for the aggregates collector at most once per this duration, serving the last outcome to scrapes in between. 0 queries on every scrape (default: 0s) [$SPACELIFT_PROMEX_COLLECTOR_AGGREGATES_CACHE_TTL]
 ```
 
 ## Version
@@ -205,6 +209,65 @@ spacelift_scrape_collector_success == 0
 collector's data at all. It is not a failure, and in partial mode it does not fail the scrape
 while any collector still succeeds.
 
+## Scrape interval and API load
+
+The exporter does not poll on its own: every request to `/metrics` issues one GraphQL request per
+enabled collector, live. API load is therefore set by your scrape configuration, not by the
+exporter:
+
+```text
+requests per day, per collector = 86,400 / scrape interval in seconds x number of scrapers
+```
+
+A scraper is anything that requests `/metrics`: each replica of an HA Prometheus pair, a second
+monitoring agent, or a liveness probe pointed at `/metrics` instead of `/health`. One exporter
+scraped every 15 seconds by an HA pair issues 11,520 requests a day per collector; scraped every
+second, 172,800.
+
+The collectors move at very different speeds:
+
+| Collector          | Changes                                               | Suggested `cache-ttl`    |
+| ------------------ | ----------------------------------------------------- | ------------------------ |
+| `workerpools`      | With every queued or finished run                     | `0` (query every scrape) |
+| `publicworkerpool` | With every queued or finished run                     | `0` (query every scrape) |
+| `usage`            | Slowly; billing-period counters                       | `5m`                     |
+| `aggregates`       | Slowly; account-wide analytics, expensive server-side | `5m` to `15m`            |
+
+Recommendations:
+
+- **Scrape every 30 to 60 seconds** unless something needs fresher data. Worker pool queue depth is
+  the only fast-moving signal the exporter serves.
+- **If you autoscale workers from these metrics** (for example with KEDA's Prometheus scaler), a
+  short scrape interval is reasonable, but set `--collector.aggregates.cache-ttl` and
+  `--collector.usage.cache-ttl` so the slow, expensive collectors are not queried at the autoscaling
+  cadence. KEDA's Prometheus scaler queries Prometheus, not the exporter, so the scrape interval
+  never needs to be shorter than the scaler's `pollingInterval`. Alternatively, run a second exporter
+  with only `workerpools` enabled and scrape that one fast. A second scrape job against the same
+  exporter does not help: every request to `/metrics` runs every enabled collector.
+- **Point probes at `/health`**, never at `/metrics`.
+
+`--collector.<name>.cache-ttl` (or `SPACELIFT_PROMEX_COLLECTOR_<NAME>_CACHE_TTL`) makes a collector
+query the API at most once per TTL, however often and by however many scrapers the exporter is
+scraped; scrapes that arrive while a request is in flight wait for it rather than issuing their own.
+In between, scrapes are served the last outcome. The default of `0` queries on every scrape, as the
+exporter always has.
+
+A cached collector stays truthful about what it serves:
+
+- `spacelift_scrape_collector_duration_seconds` reports the duration of the request that produced
+  the data, not the near-zero time a cache hit takes.
+- `spacelift_scrape_collector_cache_age_seconds` reports how old that data is: `0` on the scrape
+  that issued the request, then rising until the TTL expires. It is only emitted for collectors with
+  a TTL.
+- A failed request is cached like a successful one, so `spacelift_scrape_collector_success` stays
+  `0` until the next request after the TTL. This keeps a collector whose query is timing out from
+  retrying on every scrape, when the API can least afford it.
+
+```promql
+# Data older than intended: the cache is not refreshing.
+spacelift_scrape_collector_cache_age_seconds > 900
+```
+
 ## Available Metrics
 
 The following metrics are provided by the exporter:
@@ -230,7 +293,8 @@ The following metrics are provided by the exporter:
 | `spacelift_current_median_run_duration`                    |                                      | The median run duration                                                                        |
 | `spacelift_scrape_collector_success`                       | `collector`                          | Whether the collector succeeded on the last scrape (1) or failed (0)                           |
 | `spacelift_scrape_collector_supported`                     | `collector`                          | Whether the collector's data is available on this deployment, tier and API key (1) or not (0) |
-| `spacelift_scrape_collector_duration_seconds`              | `collector`                          | The duration in seconds of the collector's request to the Spacelift API on the last scrape     |
+| `spacelift_scrape_collector_duration_seconds`              | `collector`                          | The duration in seconds of the collector's request to the Spacelift API on the last scrape (for a cached collector, the request that produced the data served) |
+| `spacelift_scrape_collector_cache_age_seconds`             | `collector`                          | Age of the data a cached collector served on the last scrape; only for collectors with a cache TTL |
 | `spacelift_scrape_duration_seconds`                        |                                      | The duration in seconds of the request to the Spacelift API for metrics (the whole scrape; collectors query concurrently) |
 | `spacelift_build_info`                                     |                                      | Contains build information about the exporter (version, commit, etc)                           |
 

@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 
+	"github.com/spacelift-io/prometheus-exporter/collector"
 	"github.com/spacelift-io/prometheus-exporter/logging"
 )
 
@@ -208,9 +209,23 @@ func (s *graphqlStub) partialCollector(t *testing.T) prometheus.Collector {
 func (s *graphqlStub) collectorWithPartialScrapes(t *testing.T, partialScrapes bool) prometheus.Collector {
 	t.Helper()
 
+	return s.newExporter(t, newCollectors(nil), partialScrapes)
+}
+
+// cachedCollector is collector with the given per-collector cache TTLs, keyed
+// by collector name.
+func (s *graphqlStub) cachedCollector(t *testing.T, ttls map[string]time.Duration) prometheus.Collector {
+	t.Helper()
+
+	return s.newExporter(t, withCacheTTLs(newCollectors(nil), ttls), false)
+}
+
+func (s *graphqlStub) newExporter(t *testing.T, collectors []collector.Collector, partialScrapes bool) prometheus.Collector {
+	t.Helper()
+
 	ctx := logging.Init(context.Background(), true)
 	exporter, err := newExporter(
-		ctx, s.server.Client(), &fakeSession{endpoint: s.server.URL}, 5*time.Second, newCollectors(nil), partialScrapes)
+		ctx, s.server.Client(), &fakeSession{endpoint: s.server.URL}, 5*time.Second, collectors, partialScrapes)
 	if err != nil {
 		t.Fatalf("newExporter: %v", err)
 	}

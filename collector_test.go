@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -463,5 +464,67 @@ func TestGatedBackendDegradesGracefully(t *testing.T) {
 	// And the ungated collector still works.
 	if !strings.Contains(output, "spacelift_worker_pool_runs_pending{") {
 		t.Errorf("worker pool metrics should still be collected on a gated backend:\n%s", output)
+	}
+}
+
+// TestCacheTTLBoundsAPIRequests scrapes an exporter whose aggregates collector
+// has a cache TTL three times: the `metrics` document is requested once and
+// served from cache after that, while uncached collectors query every scrape.
+func TestCacheTTLBoundsAPIRequests(t *testing.T) {
+	stub := newGraphQLStub(t, fixture(t, "saas"))
+	exporter := stub.cachedCollector(t, map[string]time.Duration{"aggregates": time.Hour})
+
+	var outputs []string
+	for range 3 {
+		outputs = append(outputs, gather(t, exporter))
+	}
+
+	_, operationNames := stub.recorded()
+	requests := map[string]int{}
+	for _, name := range operationNames {
+		requests[name]++
+	}
+	for operation, want := range map[string]int{
+		"PrometheusExporter_Aggregates":       1,
+		"PrometheusExporter_WorkerPools":      3,
+		"PrometheusExporter_Usage":            3,
+		"PrometheusExporter_PublicWorkerPool": 3,
+	} {
+		if got := requests[operation]; got != want {
+			t.Errorf("3 scrapes issued %d %s requests, want %d", got, operation, want)
+		}
+	}
+
+	// Every scrape, cached or not, serves the aggregates and reports the
+	// collector healthy, with a cache age only for the cached collector.
+	for index, output := range outputs {
+		for _, want := range []string{
+			"spacelift_current_stacks_count_by_state{",
+			`spacelift_scrape_collector_success{collector="aggregates"} 1`,
+			`spacelift_scrape_collector_cache_age_seconds{collector="aggregates"} `,
+		} {
+			if !strings.Contains(output, want) {
+				t.Errorf("scrape %d is missing %q:\n%s", index+1, want, output)
+			}
+		}
+		if strings.Contains(output, `spacelift_scrape_collector_cache_age_seconds{collector="usage"}`) {
+			t.Errorf("scrape %d reported a cache age for an uncached collector", index+1)
+		}
+	}
+}
+
+// TestZeroCacheTTLKeepsTheGoldenSurface pins that wiring the default TTL of 0
+// through withCacheTTLs changes nothing: same output, a request per scrape.
+func TestZeroCacheTTLKeepsTheGoldenSurface(t *testing.T) {
+	stub := newGraphQLStub(t, fixture(t, "saas"))
+	exporter := stub.cachedCollector(t, map[string]time.Duration{
+		"publicworkerpool": 0, "workerpools": 0, "usage": 0, "aggregates": 0,
+	})
+
+	assertGolden(t, "saas", gather(t, exporter))
+	gather(t, exporter)
+
+	if queries, _ := stub.recorded(); len(queries) != 2*len(newCollectors(nil)) {
+		t.Errorf("2 scrapes with a zero TTL issued %d requests, want %d", len(queries), 2*len(newCollectors(nil)))
 	}
 }

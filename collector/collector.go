@@ -54,6 +54,7 @@ type Exporter struct {
 	collectorSuccess   *prometheus.Desc
 	collectorDuration  *prometheus.Desc
 	collectorSupported *prometheus.Desc
+	collectorCacheAge  *prometheus.Desc
 	scrapeDuration     *prometheus.Desc
 	buildInfo          *prometheus.Desc
 	scrapeError        *prometheus.Desc
@@ -98,6 +99,12 @@ func New(
 				"An unsupported collector is not a failure.",
 			[]string{"collector"},
 			nil),
+		collectorCacheAge: prometheus.NewDesc(
+			"spacelift_scrape_collector_cache_age_seconds",
+			"Age of the data a cached collector served on the last scrape: 0 when the scrape issued the request, "+
+				"otherwise the time since it was issued. Only reported for collectors with a cache TTL.",
+			[]string{"collector"},
+			nil),
 		scrapeDuration: prometheus.NewDesc(
 			"spacelift_scrape_duration_seconds",
 			"The duration in seconds of the request to the Spacelift API for metrics",
@@ -130,10 +137,26 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.collectorSupported
 	ch <- e.scrapeDuration
 	ch <- e.buildInfo
+	if e.anyCached() {
+		ch <- e.collectorCacheAge
+	}
 
 	for _, c := range e.collectors {
 		c.Describe(ch)
 	}
+}
+
+// anyCached reports whether any collector has a cache TTL. The cache age
+// series is only described and emitted then, so an exporter without one keeps
+// exactly the metric surface it always had.
+func (e *Exporter) anyCached() bool {
+	for _, c := range e.collectors {
+		if _, ok := c.(*cachingCollector); ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Collect implements prometheus.Collector.
@@ -195,6 +218,10 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		}
 		ch <- prometheus.MustNewConstMetric(e.collectorSuccess, prometheus.GaugeValue, success, c.Name())
 		ch <- prometheus.MustNewConstMetric(e.collectorSupported, prometheus.GaugeValue, supported, c.Name())
+		if result.cached {
+			ch <- prometheus.MustNewConstMetric(
+				e.collectorCacheAge, prometheus.GaugeValue, result.cacheAge.Seconds(), c.Name())
+		}
 
 		metrics = append(metrics, result.metrics...)
 	}
@@ -217,20 +244,38 @@ type collectionResult struct {
 	metrics  []prometheus.Metric
 	err      error
 	duration time.Duration
+
+	// cached is set for a collector with a cache TTL, and cacheAge is then
+	// the age of the outcome it served.
+	cached   bool
+	cacheAge time.Duration
 }
 
 // collect runs one collector, timing it and turning a panic into an error so
 // that a bug in one collector cannot take the process down.
+//
+// A cached collector reports the duration of the request that produced the
+// outcome it served, not the time a cache hit took: a hit issued no request,
+// and reporting it as a near-zero one would misstate the API's latency.
 func (e *Exporter) collect(ctx context.Context, c Collector) (result collectionResult) {
 	start := time.Now()
 	defer func() {
-		result.duration = time.Since(start)
 		if recovered := recover(); recovered != nil {
 			result.metrics, result.err = nil, fmt.Errorf("collector panicked: %v", recovered)
+			result.duration = time.Since(start)
 		}
 	}()
 
+	if cache, ok := c.(*cachingCollector); ok {
+		var entry cacheEntry
+		entry, result.cacheAge = cache.collectCached(ctx, e.client)
+		result.metrics, result.err, result.duration, result.cached = entry.metrics, entry.err, entry.duration, true
+
+		return result
+	}
+
 	result.metrics, result.err = c.Collect(ctx, e.client)
+	result.duration = time.Since(start)
 
 	return result
 }

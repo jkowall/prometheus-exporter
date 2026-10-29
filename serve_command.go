@@ -108,19 +108,46 @@ var (
 )
 
 // collectorCLIFlags returns one --[no-]collector.<name> flag per collector, in
-// the node_exporter idiom.
+// the node_exporter idiom, and one --collector.<name>.cache-ttl flag.
 func collectorCLIFlags() []cli.Flag {
-	flags := make([]cli.Flag, 0, len(collectorSpecs))
+	flags := make([]cli.Flag, 0, 2*len(collectorSpecs))
 	for _, spec := range collectorSpecs {
-		flags = append(flags, &cli.BoolWithInverseFlag{
-			Name:    "collector." + spec.name,
-			Usage:   "Enable the " + spec.name + " collector",
-			Value:   spec.defaultEnabled,
-			Sources: cli.EnvVars("SPACELIFT_PROMEX_COLLECTOR_" + strings.ToUpper(spec.name)),
-		})
+		env := "SPACELIFT_PROMEX_COLLECTOR_" + strings.ToUpper(spec.name)
+		flags = append(flags,
+			&cli.BoolWithInverseFlag{
+				Name:    "collector." + spec.name,
+				Usage:   "Enable the " + spec.name + " collector",
+				Value:   spec.defaultEnabled,
+				Sources: cli.EnvVars(env),
+			},
+			&cli.DurationFlag{
+				Name: cacheTTLFlagName(spec.name),
+				Usage: "Query the API for the " + spec.name + " collector at most once per this duration, serving " +
+					"the last outcome to scrapes in between. 0 queries on every scrape",
+				Sources: cli.EnvVars(env + "_CACHE_TTL"),
+			},
+		)
 	}
 
 	return flags
+}
+
+func cacheTTLFlagName(collector string) string {
+	return "collector." + collector + ".cache-ttl"
+}
+
+// collectorCacheTTLs reads the cache TTL flags, keyed by collector name.
+func collectorCacheTTLs(cmd *cli.Command) (map[string]time.Duration, error) {
+	out := make(map[string]time.Duration, len(collectorSpecs))
+	for _, spec := range collectorSpecs {
+		ttl := cmd.Duration(cacheTTLFlagName(spec.name))
+		if ttl < 0 {
+			return nil, fmt.Errorf("--%s must not be negative", cacheTTLFlagName(spec.name))
+		}
+		out[spec.name] = ttl
+	}
+
+	return out, nil
 }
 
 // collectorSelection reads the collector flags into the map newCollectors takes.
@@ -210,6 +237,12 @@ var serveCommand *cli.Command = &cli.Command{
 			return cli.Exit("every collector is disabled, so there would be nothing to export", ExitCodeStartupError)
 		}
 
+		cacheTTLs, err := collectorCacheTTLs(cmd)
+		if err != nil {
+			return cli.Exit(err.Error(), ExitCodeStartupError)
+		}
+		collectors = withCacheTTLs(collectors, cacheTTLs)
+
 		exporter, err := newExporter(ctx, httpClient, session, scrapeTimeout, collectors, cmd.Bool(flagPartialScrapes.Name))
 		if err != nil {
 			return cli.Exit(fmt.Sprintf("could not create Spacelift collector: %v", err), ExitCodeStartupError)
@@ -218,7 +251,11 @@ var serveCommand *cli.Command = &cli.Command{
 
 		names := make([]string, 0, len(collectors))
 		for _, c := range collectors {
-			names = append(names, c.Name())
+			name := c.Name()
+			if ttl := cacheTTLs[name]; ttl > 0 {
+				name += " (cache TTL " + ttl.String() + ")"
+			}
+			names = append(names, name)
 		}
 		logger.Infow("Collectors enabled", "collectors", strings.Join(names, ", "))
 
