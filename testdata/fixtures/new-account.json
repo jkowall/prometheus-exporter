@@ -3,7 +3,9 @@
     "publicWorkerPool": {
       "parallelism": 2,
       "busyWorkers": 0,
-      "pendingRuns": 0
+      "pendingRuns": 0,
+      "searchSchedulableRuns": { "edges": [], "pageInfo": { "hasNextPage": false } },
+      "searchSchedulableRunsSuggestions": { "filteredCount": 0 }
     },
     "workerPools": [
       {
@@ -11,7 +13,9 @@
         "name": "first-pool",
         "pendingRuns": 0,
         "busyWorkers": 0,
-        "workers": []
+        "workers": [],
+        "searchSchedulableRuns": { "edges": [], "pageInfo": { "hasNextPage": false } },
+        "searchSchedulableRunsSuggestions": { "filteredCount": 0 }
       }
     ],
     "usage": {

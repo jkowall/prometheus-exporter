@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestCollectGoldenAllCollectors(t *testing.T) {
 
 // TestNewAccountAllCollectors states the empty-account contract the
 // new-account golden pins: series that describe a pool are emitted for an
-// empty one, with zero values rather than gaps.
+// empty one, and series that describe a run are absent when there is none.
 func TestNewAccountAllCollectors(t *testing.T) {
 	stub := newGraphQLStub(t, fixture(t, "new-account"))
 	output := gather(t, stub.allCollectors(t))
@@ -53,6 +54,8 @@ func TestNewAccountAllCollectors(t *testing.T) {
 	const pool = `worker_pool_id="01HQZXE1B2C3D4E5F6G7H8J9K0",worker_pool_name="first-pool"`
 	want := []string{
 		`spacelift_worker_pool_workers{` + pool + `} 0`,
+		`spacelift_worker_pool_schedulable_runs_truncated{` + pool + `} 0`,
+		`spacelift_public_worker_pool_schedulable_runs_truncated 0`,
 	}
 	for _, status := range []string{"busy", "drained", "draining", "idle"} {
 		want = append(want, `spacelift_worker_pool_workers_by_status{status="`+status+`",`+pool+`} 0`)
@@ -60,6 +63,17 @@ func TestNewAccountAllCollectors(t *testing.T) {
 	for _, line := range want {
 		if !strings.Contains(output, line) {
 			t.Errorf("missing %q in:\n%s", line, output)
+		}
+	}
+
+	for _, family := range []string{
+		"spacelift_worker_pool_schedulable_runs{",
+		"spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds",
+		"spacelift_public_worker_pool_schedulable_runs{",
+		"spacelift_public_worker_pool_oldest_schedulable_run_created_timestamp_seconds",
+	} {
+		if strings.Contains(output, "\n"+family) {
+			t.Errorf("an empty account emitted %s series:\n%s", family, output)
 		}
 	}
 }
@@ -210,12 +224,19 @@ func TestQueryShape(t *testing.T) {
 		"PrometheusExporter_Usage":            `query PrometheusExporter_Usage{usage{billingPeriodStart,billingPeriodEnd,usedPrivateMinutes,usedPublicMinutes,usedSeats}}`,
 		"PrometheusExporter_Aggregates":       `query PrometheusExporter_Aggregates{metrics{stacksCountByState{value,labels},resourcesCountByDrift{value,labels},avgStackSizeByResourceCount{value,labels},averageRunDuration{value,labels},medianRunDuration{value,labels}}}`,
 		"PrometheusExporter_WorkerStatus":     `query PrometheusExporter_WorkerStatus{workerPools{id,name,workers{busy,drained}}}`,
+		"PrometheusExporter_Queue":            `query PrometheusExporter_Queue($input:SearchInput!$total:SearchSuggestionsInput!){workerPools{id,name,searchSchedulableRuns(input:$input){edges{node{run{createdAt,state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
+		"PrometheusExporter_PublicQueue":      `query PrometheusExporter_PublicQueue($input:SearchInput!$total:SearchSuggestionsInput!){publicWorkerPool{searchSchedulableRuns(input:$input){edges{node{run{createdAt,state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
 	}
 
-	// The variables each document sends, "" for none. They are part of a
-	// document's cost and are not visible in its text. No document takes any
-	// yet.
-	variables := map[string]string{}
+	// The variables each document sends, "" for none. The queue searches ask
+	// for their runs oldest first, and for the total with no per-field
+	// suggestions, which keeps that second call cheap; neither is visible in
+	// the document text. They set no page size because the API ignores it.
+	const queueVariables = `{"input":{"orderBy":[{"field":"createdAt","direction":"ASC"}]},"total":{"fields":[]}}`
+	variables := map[string]string{
+		"PrometheusExporter_Queue":       queueVariables,
+		"PrometheusExporter_PublicQueue": queueVariables,
+	}
 
 	defaults := []string{
 		"PrometheusExporter_PublicWorkerPool",
@@ -550,6 +571,106 @@ func TestGatedBackendDegradesGracefully(t *testing.T) {
 	}
 }
 
+// TestQueueWithoutAnAnswer covers the nullable search and total. A pool whose
+// search or total the API returns as null, without an error, must report
+// nothing rather than an empty queue: a truncated=0 series would claim the
+// pool's queue was read in full.
+func TestQueueWithoutAnAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name, publicQueue string
+	}{
+		{name: "null search", publicQueue: `{"data":{"publicWorkerPool":{"searchSchedulableRuns":null,"searchSchedulableRunsSuggestions":{"filteredCount":0}}}}`},
+		{name: "null total", publicQueue: `{"data":{"publicWorkerPool":{"searchSchedulableRuns":{"edges":[],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":null}}}`},
+		{name: "null public pool", publicQueue: `{"data":{"publicWorkerPool":null}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := newGraphQLStub(t, fixture(t, "saas"))
+			stub.failOperation("PrometheusExporter_Queue", `{"data":{"workerPools":[`+
+				`{"id":"pool-unanswered","name":"unanswered","searchSchedulableRuns":null,"searchSchedulableRunsSuggestions":{"filteredCount":0}},`+
+				`{"id":"pool-uncounted","name":"uncounted","searchSchedulableRuns":{"edges":[],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":null}]}}`)
+			stub.failOperation("PrometheusExporter_PublicQueue", test.publicQueue)
+
+			output := gather(t, stub.allCollectors(t))
+
+			for _, want := range []string{
+				`spacelift_scrape_collector_success{collector="queue"} 1`,
+				`spacelift_scrape_collector_success{collector="publicqueue"} 1`,
+			} {
+				if !strings.Contains(output, want) {
+					t.Errorf("missing %q in:\n%s", want, output)
+				}
+			}
+
+			for _, unwanted := range []string{"pool-unanswered", "pool-uncounted", "schedulable"} {
+				if strings.Contains(output, unwanted) {
+					t.Errorf("a search with no answer still produced series mentioning %q:\n%s", unwanted, output)
+				}
+			}
+		})
+	}
+}
+
+// queueResponse renders a search result of n READY runs, created one second
+// apart from first, with the given total and hasNextPage false, as the API
+// returns it whatever the result's size.
+func queueResponse(n int, first int64, total int) string {
+	edges := make([]string, 0, n)
+	for i := range n {
+		edges = append(edges, fmt.Sprintf(`{"node":{"run":{"createdAt":%d,"state":"READY","type":"TRACKED"}}}`, first+int64(i)))
+	}
+
+	return fmt.Sprintf(`"searchSchedulableRuns":{"edges":[%s],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":{"filteredCount":%d}`,
+		strings.Join(edges, ","), total)
+}
+
+// TestQueueBoundariesEndToEnd runs the API's truncation boundary through the
+// real client and exporter, so that the total is decoded from the field the
+// document selects and reaches the metrics. TestSummarizeQueueBoundaries
+// covers the arithmetic at more sizes.
+func TestQueueBoundariesEndToEnd(t *testing.T) {
+	const firstCreated = 1752700000
+
+	for _, test := range []struct {
+		name      string
+		total     int
+		truncated bool
+	}{
+		{name: "250 of 250", total: 250},
+		{name: "250 of 251", total: 251, truncated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := queueResponse(250, firstCreated, test.total)
+			stub := newGraphQLStub(t, fixture(t, "saas"))
+			stub.failOperation("PrometheusExporter_Queue",
+				`{"data":{"workerPools":[{"id":"pool-big","name":"big",`+body+`}]}}`)
+			stub.failOperation("PrometheusExporter_PublicQueue", `{"data":{"publicWorkerPool":{`+body+`}}}`)
+
+			output := gather(t, stub.allCollectors(t))
+
+			want := map[bool]string{false: "0", true: "1"}[test.truncated]
+			for _, line := range []string{
+				`spacelift_worker_pool_schedulable_runs_truncated{worker_pool_id="pool-big",worker_pool_name="big"} ` + want,
+				`spacelift_public_worker_pool_schedulable_runs_truncated ` + want,
+				`spacelift_worker_pool_schedulable_runs{state="READY",type="TRACKED",worker_pool_id="pool-big",worker_pool_name="big"} 250`,
+				`spacelift_public_worker_pool_schedulable_runs{state="READY",type="TRACKED"} 250`,
+			} {
+				if !strings.Contains(output, line) {
+					t.Errorf("missing %q in:\n%s", line, output)
+				}
+			}
+
+			for _, family := range []string{
+				"spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds{",
+				"spacelift_public_worker_pool_oldest_schedulable_run_created_timestamp_seconds ",
+			} {
+				if got := strings.Contains(output, family); got == test.truncated {
+					t.Errorf("%s present = %t, want %t", strings.TrimRight(family, "{ "), got, !test.truncated)
+				}
+			}
+		})
+	}
+}
+
 // TestOptInCollectorFailurePolicy is TestMetricsHandlerPolicy for each opt-in
 // collector, with every collector enabled: one opt-in failing or gated while
 // the rest stay healthy. Strict mode fails the scrape and names it; partial
@@ -567,6 +688,8 @@ func TestOptInCollectorFailurePolicy(t *testing.T) {
 		family string
 	}{
 		{name: "workerstatus", operation: "PrometheusExporter_WorkerStatus", family: "spacelift_worker_pool_workers_by_status"},
+		{name: "queue", operation: "PrometheusExporter_Queue", family: "spacelift_worker_pool_schedulable_runs"},
+		{name: "publicqueue", operation: "PrometheusExporter_PublicQueue", family: "spacelift_public_worker_pool_schedulable_runs"},
 	} {
 		for _, test := range []struct {
 			mode           string

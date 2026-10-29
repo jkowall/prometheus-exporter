@@ -3,7 +3,15 @@
     "publicWorkerPool": {
       "parallelism": 10,
       "busyWorkers": 3,
-      "pendingRuns": 2
+      "pendingRuns": 2,
+      "searchSchedulableRuns": {
+        "edges": [
+          { "node": { "run": { "createdAt": 1752700500, "state": "INITIALIZING", "type": "PROPOSED" } } },
+          { "node": { "run": { "createdAt": 1752700600, "state": "READY", "type": "TRACKED" } } }
+        ],
+        "pageInfo": { "hasNextPage": false }
+      },
+      "searchSchedulableRunsSuggestions": { "filteredCount": 2 }
     },
     "workerPools": [
       {
@@ -18,7 +26,17 @@
           { "id": "worker-d", "drained": false, "busy": false },
           { "id": "worker-e", "drained": true, "busy": true },
           { "id": "worker-f", "drained": true, "busy": false }
-        ]
+        ],
+        "searchSchedulableRuns": {
+          "edges": [
+            { "node": { "run": { "createdAt": 1752700000, "state": "PLANNING", "type": "TRACKED" } } },
+            { "node": { "run": { "createdAt": 1752700100, "state": "READY", "type": "PROPOSED" } } },
+            { "node": { "run": { "createdAt": 1752700200, "state": "READY", "type": "PROPOSED" } } },
+            { "node": { "run": { "createdAt": 1752700300, "state": "READY", "type": "TRACKED" } } }
+          ],
+          "pageInfo": { "hasNextPage": false }
+        },
+        "searchSchedulableRunsSuggestions": { "filteredCount": 750 }
       },
       {
         "id": "01HQZXA1B2C3D4E5F6G7H8J9K0",
@@ -29,7 +47,14 @@
           { "id": "worker-g", "drained": false, "busy": true },
           { "id": "worker-h", "drained": false, "busy": false },
           { "id": "worker-i", "drained": false, "busy": false }
-        ]
+        ],
+        "searchSchedulableRuns": {
+          "edges": [
+            { "node": { "run": { "createdAt": 1752700400, "state": "READY", "type": "TRACKED" } } }
+          ],
+          "pageInfo": { "hasNextPage": false }
+        },
+        "searchSchedulableRunsSuggestions": { "filteredCount": 1 }
       }
     ],
     "usage": {
