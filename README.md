@@ -202,8 +202,9 @@ spacelift_scrape_collector_success == 0
 ```
 
 `spacelift_scrape_collector_supported == 0` means the deployment, tier or API key cannot supply that
-collector's data at all. It is not a failure, and in partial mode it does not fail the scrape
-while any collector still succeeds.
+collector's data at all: the field is gated for API keys, or the backend's schema does not have it,
+as on a Self-Hosted release older than the field. It is not a failure, and in partial mode it does
+not fail the scrape while any collector still succeeds.
 
 ## Available Metrics
 

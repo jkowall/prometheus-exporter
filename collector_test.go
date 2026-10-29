@@ -338,6 +338,9 @@ func TestMetricsHandlerPolicy(t *testing.T) {
 	const (
 		internalError = `{"errors":[{"message":"internal error"}]}`
 		gatedError    = `{"errors":[{"message":"not available for machine sessions"}]}`
+		// What a backend whose schema lacks a field, such as a Self-Hosted
+		// release older than it, returns for a document that selects it.
+		missingField = `{"errors":[{"message":"Cannot query field \"medianRunDuration\" on type \"Metrics\".","extensions":{"code":"GRAPHQL_VALIDATION_FAILED"}}]}`
 	)
 
 	for _, test := range []struct {
@@ -376,6 +379,22 @@ func TestMetricsHandlerPolicy(t *testing.T) {
 			name:           "partial: an unsupported collector is healthy but unavailable",
 			partialScrapes: true,
 			response:       gatedError,
+			wantStatus:     http.StatusOK,
+			wantBody: []string{
+				`spacelift_scrape_collector_success{collector="aggregates"} 1`,
+				`spacelift_scrape_collector_supported{collector="aggregates"} 0`,
+			},
+		},
+		{
+			name:       "strict: a field missing from the schema fails the scrape",
+			response:   missingField,
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   []string{"spacelift_error", "aggregates: not supported"},
+		},
+		{
+			name:           "partial: a field missing from the schema is unsupported, not failed",
+			partialScrapes: true,
+			response:       missingField,
 			wantStatus:     http.StatusOK,
 			wantBody: []string{
 				`spacelift_scrape_collector_success{collector="aggregates"} 1`,
