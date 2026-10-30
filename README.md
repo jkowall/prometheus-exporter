@@ -205,6 +205,40 @@ spacelift_scrape_collector_success == 0
 collector's data at all. It is not a failure, and in partial mode it does not fail the scrape
 while any collector still succeeds.
 
+## Scrape interval and API load
+
+The exporter does not poll on its own: every request to `/metrics` issues one GraphQL request per
+enabled collector, live. API load is therefore set by your scrape configuration:
+
+```text
+requests per day, per collector = 86,400 / scrape interval in seconds x number of scrapers
+```
+
+A scraper is anything that requests `/metrics`: each replica of an HA Prometheus pair, a second
+monitoring agent, or a probe pointed at `/metrics`. One exporter scraped every 15 seconds by an HA
+pair issues 11,520 requests a day per collector; scraped every second, 172,800.
+
+The collectors' data changes at different rates:
+
+| Collector          | Changes                                                                   |
+| ------------------ | ------------------------------------------------------------------------- |
+| `workerpools`      | With every queued, started or finished run                                |
+| `publicworkerpool` | With every queued, started or finished run                                |
+| `usage`            | Billing-period counters; tolerates staleness                              |
+| `aggregates`       | Account-wide stack, drift and run-duration summaries; tolerates staleness |
+
+Recommendations:
+
+- **Scrape every 30 to 60 seconds** unless something needs fresher data. The worker pool series
+  are the only fast-moving signals the exporter serves.
+- **If you autoscale workers from these metrics** (for example with KEDA's Prometheus scaler), note
+  that the scaler queries Prometheus, not the exporter, so the scrape interval never needs to be
+  shorter than the scaler's `pollingInterval`. To scrape worker pools faster than the rest, run a
+  second exporter with only `workerpools` enabled and scrape that one fast. A second scrape job
+  against the same exporter does not help: every request to `/metrics` runs every enabled collector.
+- **Point liveness and readiness probes at `/health`**, never at `/metrics`. `/health` answers
+  without querying the Spacelift API.
+
 ## Available Metrics
 
 The following metrics are provided by the exporter:
