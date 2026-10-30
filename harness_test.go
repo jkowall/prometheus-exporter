@@ -224,22 +224,41 @@ type reporter interface {
 //
 // An alias is looked up in the fixture first, then the field it renames, so a
 // fixture can give each alias its own data. Two selections of one field with
-// different arguments that both fall back to the field name fail the test,
-// since they would be served the same data.
+// different arguments that are both served from the field name fail the test,
+// since they would be served the same data. That includes a selection without
+// an alias, which is always served from the field name.
 //
-// Errors are passed through unchanged: a fixture that carries an error fails
-// every document, which is what TestCollectorSurfacesQueryErrors relies on. A
-// fixture that is not a GraphQL envelope fails the test; failOperation serves
-// a malformed body when a test needs one.
+// Errors and extensions are passed through unchanged: a fixture that carries
+// an error fails every document, which is what
+// TestCollectorSurfacesQueryErrors relies on. A fixture that is not a GraphQL
+// envelope fails the test: malformed JSON, a top-level key other than data,
+// errors and extensions, or neither data nor errors. failOperation serves a
+// malformed body when a test needs one.
 func projectFixture(t reporter, response string, query string) string {
 	t.Helper()
 
-	var envelope struct {
-		Data   map[string]json.RawMessage `json:"data"`
-		Errors json.RawMessage            `json:"errors,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(response), &envelope); err != nil {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(response), &keys); err != nil {
 		t.Errorf("fixture is not a GraphQL envelope: %v", err)
+		return response
+	}
+
+	var envelope struct {
+		Data       map[string]json.RawMessage `json:"data"`
+		Errors     json.RawMessage            `json:"errors,omitempty"`
+		Extensions json.RawMessage            `json:"extensions,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(response))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		t.Errorf("fixture is not a GraphQL envelope: %v", err)
+		return response
+	}
+
+	_, hasData := keys["data"]
+	_, hasErrors := keys["errors"]
+	if !hasData && !hasErrors {
+		t.Errorf("fixture is not a GraphQL envelope: it holds neither data nor errors")
 		return response
 	}
 
@@ -259,9 +278,10 @@ func projectFixture(t reporter, response string, query string) string {
 	}
 
 	out, err := json.Marshal(struct {
-		Data   json.RawMessage `json:"data"`
-		Errors json.RawMessage `json:"errors,omitempty"`
-	}{Data: projected, Errors: envelope.Errors})
+		Data       json.RawMessage `json:"data"`
+		Errors     json.RawMessage `json:"errors,omitempty"`
+		Extensions json.RawMessage `json:"extensions,omitempty"`
+	}{Data: projected, Errors: envelope.Errors, Extensions: envelope.Extensions})
 	if err != nil {
 		t.Errorf("re-marshalling projected fixture: %v", err)
 		return response
@@ -307,10 +327,14 @@ func projectValue(t reporter, value json.RawMessage, selections []selection, pat
 		}
 
 		out := make(map[string]json.RawMessage, len(selections))
+
+		// byField holds every selection served from its field name rather
+		// than from its own alias, unaliased ones included.
 		var byField []selection
 		for _, sel := range selections {
-			field, ok := object[sel.key]
-			if !ok {
+			field, aliasHit := object[sel.key]
+			if !aliasHit || sel.key == sel.field {
+				var ok bool
 				if field, ok = object[sel.field]; !ok {
 					t.Errorf("fixture lacks %s.%s, which the document selects", path, sel.field)
 					continue
@@ -636,11 +660,60 @@ func TestProjectFixture(t *testing.T) {
 		t.Errorf("aliases with different arguments served from one field reported %v, want one error naming Op.runs", recorder.errors)
 	}
 
+	// The same holds when one of the two keeps the plain field name, in
+	// either order.
+	for _, query := range []string{
+		`query Op{runs(state:READY){n},running:runs(state:RUNNING){n}}`,
+		`query Op{running:runs(state:RUNNING){n},runs(state:READY){n}}`,
+	} {
+		recorder = &errorRecorder{}
+		projectFixture(recorder, `{"data":{"runs":{"n":1}}}`, query)
+		if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "Op.runs") {
+			t.Errorf("%s served from one field reported %v, want one error naming Op.runs", query, recorder.errors)
+		}
+	}
+
 	// A fixture that is not an envelope is a broken test, not a response
 	// under test; failOperation is how a test serves a malformed body.
-	recorder = &errorRecorder{}
-	projectFixture(recorder, `{"data":{"pools":[]},}`, `query Op{pools{id}}`)
-	if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "not a GraphQL envelope") {
-		t.Errorf("a malformed fixture reported %v, want one error saying it is not a GraphQL envelope", recorder.errors)
+	for _, broken := range []string{
+		`{"data":{"pools":[]},}`,
+		`{}`,
+		`{"dat":{}}`,
+		`{"data":{},"error":[]}`,
+	} {
+		recorder = &errorRecorder{}
+		projectFixture(recorder, broken, `query Op{pools{id}}`)
+		if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "not a GraphQL envelope") {
+			t.Errorf("fixture %s reported %v, want one error saying it is not a GraphQL envelope", broken, recorder.errors)
+		}
+	}
+}
+
+// TestGraphQLStubRecordsVariables checks that the stub keeps the variables of
+// every request, compacted and grouped by operation, so a later request does
+// not overwrite an earlier one.
+func TestGraphQLStubRecordsVariables(t *testing.T) {
+	stub := newGraphQLStub(t, `{"data":{"pools":[{"id":"a"}]}}`)
+
+	for _, variables := range []string{`{"a": 1}`, `{ "a" : 2 }`} {
+		body := `{"query":"query Op{pools{id}}","operationName":"Op","variables":` + variables + `}`
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, stub.server.URL, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("building request: %v", err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+
+		response, err := stub.server.Client().Do(request)
+		if err != nil {
+			t.Fatalf("posting to the stub: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+
+	got := stub.recordedVariables()
+	want := map[string][]string{"Op": {`{"a":1}`, `{"a":2}`}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("recordedVariables() = %v, want %v", got, want)
 	}
 }
