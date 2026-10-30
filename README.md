@@ -235,8 +235,10 @@ Recommendations:
 
 - **Scrape every 30 to 60 seconds** unless an alert or autoscaler needs fresher data.
 - **If you autoscale workers from these metrics** (for example with KEDA's Prometheus scaler), note
-  that the scaler reads Prometheus, not the exporter, so scraping faster than the scaler reads
-  only adds API load. A KEDA `ScaledJob` reads every `pollingInterval`. A `ScaledObject` checks
+  that the scaler reads Prometheus, not the exporter, on its own schedule. When it reads, the
+  newest sample can be up to one scrape interval old, so scraping faster lets it see newly queued
+  runs sooner, at the cost of more API load: a tradeoff between sample freshness and load, not a
+  free win. A KEDA `ScaledJob` reads every `pollingInterval`. A `ScaledObject` checks
   activation every `pollingInterval` but scales through the HPA, which polls every 15 seconds by
   default. With `useCachedMetrics`, those polls are answered from the value KEDA fetched at the last
   `pollingInterval`, so Prometheus is queried once per `pollingInterval`.
