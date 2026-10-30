@@ -190,9 +190,11 @@ func TestQueryShape(t *testing.T) {
 
 	// The variables each document sends are part of its cost too, and are not
 	// visible in the document text. None of the default documents takes any.
-	for operation, got := range stub.recordedVariables() {
-		if got != "" {
-			t.Errorf("%s sent variables %s, want none", operation, got)
+	for operation, sent := range stub.recordedVariables() {
+		for _, got := range sent {
+			if got != "" {
+				t.Errorf("%s sent variables %s, want none", operation, got)
+			}
 		}
 	}
 

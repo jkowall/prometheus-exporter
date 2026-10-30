@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +50,9 @@ func (s *fakeSession) RefreshToken(context.Context) error { return nil }
 type graphqlStub struct {
 	server *httptest.Server
 
-	// mutex guards queries and operationNames: collectors query concurrently.
+	// mutex guards queries, operationNames and variables: collectors query
+	// concurrently. response and overrides are only read by the handler, so
+	// set them before the first scrape.
 	mutex sync.Mutex
 
 	// response is a whole-account fixture. Each request receives the slice
@@ -70,14 +71,15 @@ type graphqlStub struct {
 	// rendered query string.
 	operationNames []string
 
-	// variables holds the compacted "variables" JSON of every request, keyed
-	// by operation name, and "" for a request that sent none.
-	variables map[string]string
+	// variables holds the compacted "variables" JSON of every request, in
+	// arrival order alongside queries, and "" for a request that sent none.
+	variables []string
 }
 
 // failOperation makes the named operation return the given body while every
 // other collector keeps receiving the fixture. Without one document per
-// collector there would be no way to fail one and not the others.
+// collector there would be no way to fail one and not the others. The body is
+// served as it is, so this is also the way to serve a malformed response.
 func (s *graphqlStub) failOperation(operation, response string) {
 	if s.overrides == nil {
 		s.overrides = map[string]string{}
@@ -95,12 +97,18 @@ func (s *graphqlStub) recorded() (queries, operationNames []string) {
 	return slices.Clone(s.queries), slices.Clone(s.operationNames)
 }
 
-// recordedVariables returns a copy of the variables each operation sent.
-func (s *graphqlStub) recordedVariables() map[string]string {
+// recordedVariables returns the variables every request sent, grouped by
+// envelope operation name, each list in arrival order.
+func (s *graphqlStub) recordedVariables() map[string][]string {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	return maps.Clone(s.variables)
+	out := map[string][]string{}
+	for i, operation := range s.operationNames {
+		out[operation] = append(out[operation], s.variables[i])
+	}
+
+	return out
 }
 
 // operationOf extracts the operation name from a query document. The name ends
@@ -114,15 +122,17 @@ func operationOf(query string) string {
 
 // selection is one field of a parsed GraphQL selection set. key is the name
 // the field takes in the response, which is its alias when it has one.
+// arguments is the raw text between the field's parentheses, if any.
 type selection struct {
-	key      string
-	field    string
-	children []selection
+	key       string
+	field     string
+	arguments string
+	children  []selection
 }
 
 // parseSelections parses the selection set of a minified query document, as
-// the GraphQL client renders it: fields, aliases, nested selection sets and
-// argument lists, which are skipped. It is not a GraphQL parser; it reads only
+// the GraphQL client renders it: fields, aliases, argument lists, kept as raw
+// text, and nested selection sets. It is not a GraphQL parser; it reads only
 // the documents this exporter sends.
 func parseSelections(query string) ([]selection, error) {
 	start := strings.Index(query, "{")
@@ -176,6 +186,7 @@ func parseSelectionSet(in string) ([]selection, string, error) {
 			if end < 0 {
 				return nil, "", fmt.Errorf("unterminated argument list for %q", sel.field)
 			}
+			sel.arguments = in[1:end]
 			in = strings.TrimLeft(in[end+1:], " ")
 		}
 
@@ -202,13 +213,24 @@ type reporter interface {
 //
 // Fixtures describe an account, not a query, which keeps them readable and
 // lets one file cover every collector. The GraphQL decoder rejects response
-// fields the query did not select, so the stub does the narrowing a real
-// server does, including for collectors that select the same root field with
-// different shapes. A selected field that the fixture lacks fails the test:
-// serving it as absent would let a collector pass on zero values the fixture
-// never meant to provide. Errors are passed through unchanged: a fixture that
-// carries an error fails every document, which is what
-// TestCollectorSurfacesQueryErrors relies on.
+// fields the query did not select, so the stub narrows the fixture to the
+// selection, including for collectors that select the same root field with
+// different shapes. A selected field missing from an object the fixture holds
+// fails the test: serving it as absent would let a collector pass on zero
+// values the fixture never meant to provide. So does an object selected
+// without subfields. Nothing is checked beneath a null or inside an empty
+// list, so a selected path is only checked by a fixture that holds a non-null,
+// non-empty value along it.
+//
+// An alias is looked up in the fixture first, then the field it renames, so a
+// fixture can give each alias its own data. Two selections of one field with
+// different arguments that both fall back to the field name fail the test,
+// since they would be served the same data.
+//
+// Errors are passed through unchanged: a fixture that carries an error fails
+// every document, which is what TestCollectorSurfacesQueryErrors relies on. A
+// fixture that is not a GraphQL envelope fails the test; failOperation serves
+// a malformed body when a test needs one.
 func projectFixture(t reporter, response string, query string) string {
 	t.Helper()
 
@@ -217,8 +239,7 @@ func projectFixture(t reporter, response string, query string) string {
 		Errors json.RawMessage            `json:"errors,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(response), &envelope); err != nil {
-		// Not a well-formed envelope: the test is asserting on a
-		// malformed response, so pass it through untouched.
+		t.Errorf("fixture is not a GraphQL envelope: %v", err)
 		return response
 	}
 
@@ -256,7 +277,14 @@ func projectValue(t reporter, value json.RawMessage, selections []selection, pat
 
 	trimmed := strings.TrimSpace(string(value))
 	switch {
-	case len(selections) == 0 || trimmed == "null":
+	case trimmed == "null":
+		return value
+
+	case len(selections) == 0:
+		if holdsObject(value) {
+			t.Errorf("fixture %s is an object but the document selects it without subfields", path)
+		}
+
 		return value
 
 	case strings.HasPrefix(trimmed, "["):
@@ -279,17 +307,43 @@ func projectValue(t reporter, value json.RawMessage, selections []selection, pat
 		}
 
 		out := make(map[string]json.RawMessage, len(selections))
+		var byField []selection
 		for _, sel := range selections {
-			field, ok := object[sel.field]
+			field, ok := object[sel.key]
 			if !ok {
-				t.Errorf("fixture lacks %s.%s, which the document selects", path, sel.field)
-				continue
+				if field, ok = object[sel.field]; !ok {
+					t.Errorf("fixture lacks %s.%s, which the document selects", path, sel.field)
+					continue
+				}
+				for _, other := range byField {
+					if other.field == sel.field && other.arguments != sel.arguments {
+						t.Errorf("fixture %s.%s would serve %s and %s the same data, but they pass different arguments; key the fixture by alias",
+							path, sel.field, other.key, sel.key)
+					}
+				}
+				byField = append(byField, sel)
 			}
 			out[sel.key] = projectValue(t, field, sel.children, path+"."+sel.field)
 		}
 
 		return mustMarshal(t, out)
 	}
+}
+
+// holdsObject reports whether a fixture value is an object or a list holding
+// one, which a document must select with subfields.
+func holdsObject(value json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(value))
+	if strings.HasPrefix(trimmed, "{") {
+		return true
+	}
+
+	var items []json.RawMessage
+	if !strings.HasPrefix(trimmed, "[") || json.Unmarshal(value, &items) != nil {
+		return false
+	}
+
+	return slices.ContainsFunc(items, holdsObject)
 }
 
 func mustMarshal(t reporter, value any) json.RawMessage {
@@ -332,10 +386,7 @@ func newGraphQLStub(t *testing.T, response string) *graphqlStub {
 		stub.mutex.Lock()
 		stub.queries = append(stub.queries, envelope.Query)
 		stub.operationNames = append(stub.operationNames, envelope.OperationName)
-		if stub.variables == nil {
-			stub.variables = map[string]string{}
-		}
-		stub.variables[envelope.OperationName] = variables.String()
+		stub.variables = append(stub.variables, variables.String())
 		stub.mutex.Unlock()
 
 		response, overridden := stub.overrides[envelope.OperationName]
@@ -500,7 +551,7 @@ func TestParseSelections(t *testing.T) {
 	want := []selection{
 		{key: "pools", field: "workerPools", children: []selection{
 			{key: "id", field: "id"},
-			{key: "search", field: "search", children: []selection{
+			{key: "search", field: "search", arguments: "input: $input, first: 2", children: []selection{
 				{key: "edges", field: "edges", children: []selection{
 					{key: "node", field: "node", children: []selection{{key: "id", field: "id"}}},
 				}},
@@ -545,5 +596,51 @@ func TestProjectFixture(t *testing.T) {
 	projectFixture(recorder, fixture, `query Op{pools{id,workers{drained}}}`)
 	if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "Op.pools.workers.drained") {
 		t.Errorf("a selected field missing from the fixture reported %v, want one error naming Op.pools.workers.drained", recorder.errors)
+	}
+
+	// workers holds objects, so selecting it as a leaf is not a valid
+	// document. Pool b's null workers is a leaf and reports nothing.
+	recorder = &errorRecorder{}
+	projectFixture(recorder, fixture, `query Op{pools{workers}}`)
+	if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "Op.pools.workers") {
+		t.Errorf("an object selected without subfields reported %v, want one error naming Op.pools.workers", recorder.errors)
+	}
+
+	// Aliases of one field with the same arguments share the field's data.
+	recorder = &errorRecorder{}
+	got = projectFixture(recorder, fixture, `query Op{a:pools{id},b:pools{name}}`)
+	if len(recorder.errors) > 0 {
+		t.Fatalf("unexpected errors: %v", recorder.errors)
+	}
+	if want := `{"data":{"a":[{"id":"a"},{"id":"b"}],"b":[{"name":"x"},{"name":"y"}]}}`; got != want {
+		t.Errorf("aliased projection = %s, want %s", got, want)
+	}
+
+	// A fixture keyed by alias gives each alias its own data.
+	const byAlias = `{"data":{"ready":{"n":1},"running":{"n":2}}}`
+	const twoStates = `query Op{ready:runs(state:READY){n},running:runs(state:RUNNING){n}}`
+	recorder = &errorRecorder{}
+	got = projectFixture(recorder, byAlias, twoStates)
+	if len(recorder.errors) > 0 {
+		t.Fatalf("unexpected errors: %v", recorder.errors)
+	}
+	if got != byAlias {
+		t.Errorf("per-alias projection = %s, want %s", got, byAlias)
+	}
+
+	// Keyed by field, both aliases would get the same data although their
+	// arguments differ.
+	recorder = &errorRecorder{}
+	projectFixture(recorder, `{"data":{"runs":{"n":1}}}`, twoStates)
+	if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "Op.runs") {
+		t.Errorf("aliases with different arguments served from one field reported %v, want one error naming Op.runs", recorder.errors)
+	}
+
+	// A fixture that is not an envelope is a broken test, not a response
+	// under test; failOperation is how a test serves a malformed body.
+	recorder = &errorRecorder{}
+	projectFixture(recorder, `{"data":{"pools":[]},}`, `query Op{pools{id}}`)
+	if len(recorder.errors) != 1 || !strings.Contains(recorder.errors[0], "not a GraphQL envelope") {
+		t.Errorf("a malformed fixture reported %v, want one error saying it is not a GraphQL envelope", recorder.errors)
 	}
 }
