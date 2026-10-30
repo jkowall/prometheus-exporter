@@ -17,6 +17,17 @@
         ]
       }
     ],
+    "stacks": [
+      {
+        "id": "on-prem-cluster",
+        "name": "On-prem cluster",
+        "space": "root",
+        "state": "FINISHED",
+        "stateSetAt": 1752630000,
+        "isDisabled": false,
+        "lockedBy": null
+      }
+    ],
     "usage": {
       "billingPeriodStart": 1752000000,
       "billingPeriodEnd": 1754678400,

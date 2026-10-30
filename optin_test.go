@@ -76,6 +76,11 @@ func TestNewAccountAllCollectors(t *testing.T) {
 
 	absent := []string{
 		"spacelift_current_stacks_count_by_state{",
+		"spacelift_stack_info{",
+		"spacelift_stack_state{",
+		"spacelift_stack_state_set_timestamp_seconds{",
+		"spacelift_stack_disabled{",
+		"spacelift_stack_locked{",
 	}
 	for _, series := range absent {
 		if strings.Contains(output, series) {
@@ -155,6 +160,7 @@ func TestOptInCollectorFailurePolicy(t *testing.T) {
 		gated                bool
 	}{
 		"workerstatus": {operation: "PrometheusExporter_WorkerStatus", missingField: "busy", onType: "Worker"},
+		"stacks":       {operation: "PrometheusExporter_Stacks", missingField: "stateSetAt", onType: "Stack"},
 	}
 
 	for _, spec := range collectorSpecs {
