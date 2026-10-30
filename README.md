@@ -220,12 +220,12 @@ pair issues 11,520 requests a day per collector; scraped every second, 172,800.
 
 What each collector serves:
 
-| Collector          | Serves                                                                    |
-| ------------------ | ------------------------------------------------------------------------- |
-| `workerpools`      | Per-pool pending runs and worker counts                                   |
-| `publicworkerpool` | Pending runs, busy workers and parallelism on the public worker pool      |
-| `usage`            | Billing-period start, end and usage counters                              |
-| `aggregates`       | Account-wide stack counts by state, resource drift and run-duration stats |
+| Collector          | Serves                                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `workerpools`      | Per-pool pending runs and worker counts                                                       |
+| `publicworkerpool` | Pending runs, busy workers and parallelism on the public worker pool                          |
+| `usage`            | Billing-period start, end and usage counters                                                  |
+| `aggregates`       | Account-wide stack counts by state, resource drift, average stack size and run-duration stats |
 
 Worker pool and stack-state series change as runs are queued, start and finish. How stale each
 collector can be depends on what you alert or scale on: scrape it as often as its most
@@ -237,10 +237,12 @@ Recommendations:
 - **If you autoscale workers from these metrics** (for example with KEDA's Prometheus scaler), note
   that the scaler reads Prometheus, not the exporter, so scraping faster than the scaler reads
   only adds API load. A KEDA `ScaledJob` reads every `pollingInterval`. A `ScaledObject` checks
-  activation every `pollingInterval` but scales through the HPA, which reads every 15 seconds by
-  default unless `useCachedMetrics` is set.
+  activation every `pollingInterval` but scales through the HPA, which polls every 15 seconds by
+  default. With `useCachedMetrics`, those polls are answered from the value KEDA fetched at the last
+  `pollingInterval`, so Prometheus is queried once per `pollingInterval`.
 - **To scrape worker pools faster than the rest**, run a second exporter with only `workerpools`
-  enabled and scrape that one fast, and disable it on the first one (`--no-collector.workerpools`),
+  (and `publicworkerpool`, if you use the public pool) enabled and scrape that one fast, and disable
+  them on the first one (`--no-collector.workerpools`),
   so each series is exported once and the API is queried once per scrape of the fast job. Add a
   `job` matcher to scaler queries as well. A second scrape job against the same exporter does not
   help: every request to `/metrics` runs every enabled collector.
