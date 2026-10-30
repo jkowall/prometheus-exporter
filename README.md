@@ -244,9 +244,9 @@ Recommendations:
   `pollingInterval`, so Prometheus is queried once per `pollingInterval`.
 - **To scrape worker pools faster than the rest**, run a second exporter with only `workerpools`
   (and `publicworkerpool`, if you use the public pool) enabled and scrape that one fast, and disable
-  them on the first one (`--no-collector.workerpools`),
-  so each series is exported once and the API is queried once per scrape of the fast job. Add a
-  `job` matcher to scaler queries as well. A second scrape job against the same exporter does not
+  them on the first one (`--no-collector.workerpools`, plus `--no-collector.publicworkerpool` if
+  you moved it). Each series is then exported once, and each scrape of the fast job issues one
+  request per collector enabled on it. Add a `job` matcher to scaler queries as well. A second scrape job against the same exporter does not
   help: every request to `/metrics` runs every enabled collector.
 - **Point liveness and readiness probes at `/health`**, never at `/metrics`. `/health` answers
   without querying the Spacelift API.
