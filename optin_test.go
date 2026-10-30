@@ -90,11 +90,11 @@ func TestNewAccountAllCollectors(t *testing.T) {
 }
 
 // TestWorkerStatusMatchesWorkerPools pins how the status breakdown relates to
-// the default pool series, for every pool in every shape: draining plus
-// drained counts the workers in spacelift_worker_pool_workers_drained, and
-// busy plus draining equals spacelift_worker_pool_workers_busy when the API's
-// busyWorkers count agrees with the workers' busy flags, as it does in every
-// fixture.
+// the default pool series, for every pool in every shape. The fixtures answer
+// both requests with the same workers, so draining plus drained equals
+// spacelift_worker_pool_workers_drained, and busy plus draining equals
+// spacelift_worker_pool_workers_busy when the API's busyWorkers count agrees
+// with the workers' busy flags, as it does in every fixture.
 func TestWorkerStatusMatchesWorkerPools(t *testing.T) {
 	for _, shape := range []string{"saas", "self-hosted", "new-account"} {
 		t.Run(shape, func(t *testing.T) {
