@@ -261,7 +261,7 @@ series, and `spacelift_scrape_collector_success{collector="<name>"}` says so.
 | `spacelift_worker_pool_workers_by_status` | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status` | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle) |
 
 `spacelift_worker_pool_workers_by_status` breaks the default pool series down by status.
-`draining` plus `drained` counts the workers in `spacelift_worker_pool_workers_drained`, `busy` plus
+`draining` plus `drained` normally equals `spacelift_worker_pool_workers_drained`, `busy` plus
 `draining` normally equals `spacelift_worker_pool_workers_busy`, and the four statuses normally sum
 to `spacelift_worker_pool_workers`. The two collectors send separate requests, so a worker that
 registers or changes state between them can make these differ for a scrape.

@@ -8,10 +8,9 @@ import (
 	"github.com/spacelift-io/prometheus-exporter/client"
 )
 
-// Worker statuses, derived from the busy and drained flags rather than the
-// API's own status enum (IDLE, BUSY, DRAINED), which has no value for a
-// drained worker that is still finishing a run: the draining phase of a
-// rollout.
+// Worker statuses, derived from each worker's busy and drained flags, so that
+// a drained worker still finishing a run (draining) is counted apart from a
+// drained idle one.
 const (
 	workerStatusIdle     = "idle"
 	workerStatusBusy     = "busy"
@@ -54,8 +53,8 @@ func NewWorkerStatus() Collector {
 		workersByStatus: prometheus.NewDesc(
 			"spacelift_worker_pool_workers_by_status",
 			"The number of workers in a worker pool by status: idle, busy, draining (drained and busy) or drained (drained and idle). "+
-				"draining plus drained counts the workers in spacelift_worker_pool_workers_drained, "+
-				"and busy plus draining normally equals spacelift_worker_pool_workers_busy",
+				"draining plus drained normally equals spacelift_worker_pool_workers_drained, "+
+				"and busy plus draining normally equals spacelift_worker_pool_workers_busy (each from a separate request)",
 			[]string{"worker_pool_id", "worker_pool_name", "status"},
 			nil),
 	}
