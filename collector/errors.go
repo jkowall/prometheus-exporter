@@ -15,10 +15,10 @@ import (
 var ErrNotSupported = errors.New("not supported on this Spacelift deployment")
 
 // VersionGated is implemented by a collector whose document selects fields
-// that an older backend's schema may lack. When the API rejects the document
-// only because fields named here are missing, the collector reports
-// unsupported rather than failed. Any other missing field, such as a typo,
-// stays a failure.
+// that an older backend's schema may lack. When every field the API reports
+// missing is named here, the collector reports unsupported rather than failed;
+// other validation messages in the same response do not change that. Any
+// other missing field, such as a typo, stays a failure.
 type VersionGated interface {
 	// VersionGatedFields returns the names of those fields.
 	VersionGatedFields() []string

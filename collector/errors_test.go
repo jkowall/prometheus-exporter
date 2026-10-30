@@ -63,6 +63,7 @@ func TestClassify(t *testing.T) {
 		{name: "undeclared field missing, suggesting declared ones", collector: gatedCollector{}, err: apiErrors(liveTypo)},
 		{name: "undeclared root field missing", collector: gatedCollector{}, err: apiErrors(liveRootField)},
 		{name: "declared and undeclared fields missing", collector: gatedCollector{}, err: apiErrors(gatedRuns, liveRootField)},
+		{name: "declared field missing beside another validation error", collector: gatedCollector{}, err: apiErrors(gatedRuns, `Unknown type "SearchInput".`), unsupported: true},
 		{name: "collector declaring no fields", collector: plainCollector{}, err: apiErrors(gatedRuns)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
