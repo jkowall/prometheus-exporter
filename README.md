@@ -261,7 +261,7 @@ series, and `spacelift_scrape_collector_success{collector="<name>"}` says so.
 | Metric                                    | Collector      | Labels                                         | Description                                                                                      |
 | ----------------------------------------- | -------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `spacelift_worker_pool_workers_by_status` | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status` | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle) |
-| `spacelift_stack_info` | `stacks` | `stack_id`, `stack_name`, `space_id` | Always 1; the stack's name and space, to join to the other stack series on `stack_id` |
+| `spacelift_stack_info` | `stacks` | `stack_id`, `stack_name`, `space_id` | Always 1; the stack's name and space, to join to the other stack series of the same target on `stack_id` |
 | `spacelift_stack_state` | `stacks` | `stack_id`, `state` | Always 1, with the stack's current state as the API reports it, such as `FINISHED` or `FAILED` |
 | `spacelift_stack_state_set_timestamp_seconds` | `stacks` | `stack_id` | When the stack entered its current state; absent when the API reports no time for the current state |
 | `spacelift_stack_disabled` | `stacks` | `stack_id` | Whether the stack is disabled (1) or not (0) |
@@ -284,8 +284,9 @@ spacelift_worker_pool_workers_by_status{status="draining"} > 0
 
 Every scrape lists all stacks the API key can read, in one request whose response grows with the
 number of stacks. The requests per day are 86,400 / scrape interval in seconds × the number of
-Prometheus servers scraping the exporter: a 15s interval behind an HA pair is 11,520 full listings a
-day, and a 60s interval from one server is 1,440.
+scrapers, where a scraper is anything that requests `/metrics`: each replica of an HA Prometheus
+pair, a second monitoring agent, or a probe. A 15s interval behind an HA pair is 11,520 full
+listings a day, and a 60s interval from one scraper is 1,440.
 
 The exporter answers `/metrics` only when every enabled collector has returned or the
 `--scrape-timeout` deadline has passed, so a slow `stacks` request delays the default metrics too,
@@ -321,11 +322,13 @@ scrape observes ends one `spacelift_stack_state` series and starts a new one, an
 the ended series in its in-memory head block for a few hours. A stack that changes state often
 therefore counts once for every state it has been seen in recently. Only `spacelift_stack_info`
 carries the stack's name and space, so renaming a stack or moving it to another space replaces that
-one series. Join it on `stack_id` to name the stack:
+one series. Join it on `stack_id` and the target's `job` and `instance` to name the stack. Matching
+on `stack_id` alone fails the whole query, with a duplicate-series error, as soon as two targets
+expose the same stack:
 
 ```promql
 spacelift_stack_state{state="FAILED"}
-  * on (stack_id) group_left (stack_name, space_id) spacelift_stack_info
+  * on (job, instance, stack_id) group_left (stack_name, space_id) spacelift_stack_info
 ```
 
 Stack series are absent while the collector is failing: with `--partial-scrapes` and another
@@ -341,7 +344,7 @@ groups:
       - alert: SpaceliftStackFailed
         expr: |
           spacelift_stack_state{state="FAILED"}
-            * on (stack_id) group_left (stack_name, space_id) spacelift_stack_info
+            * on (job, instance, stack_id) group_left (stack_name, space_id) spacelift_stack_info
         keep_firing_for: 10m
       - alert: SpaceliftStacksCollectorFailing
         expr: |

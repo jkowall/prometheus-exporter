@@ -29,7 +29,7 @@ func NewStacks() Collector {
 	return &stacks{
 		info: prometheus.NewDesc(
 			"spacelift_stack_info",
-			"Always 1, with the stack's name and space as labels, to join to the other spacelift_stack_ series on stack_id",
+			"Always 1, with the stack's name and space as labels, to join to the other spacelift_stack_ series of the same target on stack_id",
 			[]string{"stack_id", "stack_name", "space_id"},
 			nil),
 		state: prometheus.NewDesc(
