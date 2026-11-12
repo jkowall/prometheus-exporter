@@ -197,6 +197,7 @@ func TestQueryShape(t *testing.T) {
 		"PrometheusExporter_Usage":            `query PrometheusExporter_Usage{usage{billingPeriodStart,billingPeriodEnd,usedPrivateMinutes,usedPublicMinutes,usedSeats}}`,
 		"PrometheusExporter_Aggregates":       `query PrometheusExporter_Aggregates{metrics{stacksCountByState{value,labels},resourcesCountByDrift{value,labels},avgStackSizeByResourceCount{value,labels},averageRunDuration{value,labels},medianRunDuration{value,labels}}}`,
 		"PrometheusExporter_WorkerStatus":     `query PrometheusExporter_WorkerStatus{workerPools{id,name,workers{busy,drained}}}`,
+		"PrometheusExporter_Stacks":           `query PrometheusExporter_Stacks{stacks{id,name,space,state,stateSetAt,isDisabled,lockedBy}}`,
 	}
 
 	seen := map[string]string{}

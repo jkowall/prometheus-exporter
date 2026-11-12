@@ -14,6 +14,7 @@
         "workers": []
       }
     ],
+    "stacks": [],
     "usage": {
       "billingPeriodStart": 1752000000,
       "billingPeriodEnd": 1754678400,
