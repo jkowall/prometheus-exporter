@@ -32,6 +32,44 @@
         ]
       }
     ],
+    "stacks": [
+      {
+        "id": "prod-network",
+        "name": "Production network",
+        "space": "root",
+        "state": "FINISHED",
+        "stateSetAt": 1752600000,
+        "isDisabled": false,
+        "lockedBy": null
+      },
+      {
+        "id": "prod-database",
+        "name": "Production database",
+        "space": "production-01HQZXC1B2C3D4E5F6G7H8J9K0",
+        "state": "FAILED",
+        "stateSetAt": 1752610000,
+        "isDisabled": false,
+        "lockedBy": "example-user"
+      },
+      {
+        "id": "staging-app",
+        "name": "Staging app",
+        "space": "staging-01HQZXD1B2C3D4E5F6G7H8J9K0",
+        "state": "UNCONFIRMED",
+        "stateSetAt": 1752620000,
+        "isDisabled": true,
+        "lockedBy": null
+      },
+      {
+        "id": "sandbox",
+        "name": "Sandbox",
+        "space": "root",
+        "state": "NONE",
+        "stateSetAt": null,
+        "isDisabled": false,
+        "lockedBy": null
+      }
+    ],
     "usage": {
       "billingPeriodStart": 1752000000,
       "billingPeriodEnd": 1754678400,
