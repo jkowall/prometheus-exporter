@@ -65,6 +65,7 @@ func TestNewAccountAllCollectors(t *testing.T) {
 		`spacelift_worker_pool_workers_busy{` + pool + `} 0`,
 		`spacelift_worker_pool_workers_drained{` + pool + `} 0`,
 		`spacelift_worker_pool_schedulable_runs_truncated{` + pool + `} 0`,
+		`spacelift_public_worker_pool_schedulable_runs_truncated 0`,
 	}
 	for _, status := range []string{"busy", "drained", "draining", "idle"} {
 		present = append(present, `spacelift_worker_pool_workers_by_status{status="`+status+`",`+pool+`} 0`)
@@ -78,6 +79,7 @@ func TestNewAccountAllCollectors(t *testing.T) {
 	absent := []string{
 		"spacelift_current_stacks_count_by_state{",
 		"spacelift_worker_pool_schedulable_runs{",
+		"spacelift_public_worker_pool_schedulable_runs{",
 	}
 	for _, series := range absent {
 		if strings.Contains(output, series) {
@@ -164,6 +166,12 @@ func TestOptInCollectorFailurePolicy(t *testing.T) {
 			operation:     "PrometheusExporter_Queue",
 			missingFields: []string{"searchSchedulableRuns", "searchSchedulableRunsSuggestions"},
 			onType:        "WorkerPool",
+			gated:         true,
+		},
+		"publicqueue": {
+			operation:     "PrometheusExporter_PublicQueue",
+			missingFields: []string{"searchSchedulableRuns", "searchSchedulableRunsSuggestions"},
+			onType:        "PublicWorkerPool",
 			gated:         true,
 		},
 	}

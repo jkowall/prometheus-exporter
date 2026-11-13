@@ -198,6 +198,7 @@ func TestQueryShape(t *testing.T) {
 		"PrometheusExporter_Aggregates":       `query PrometheusExporter_Aggregates{metrics{stacksCountByState{value,labels},resourcesCountByDrift{value,labels},avgStackSizeByResourceCount{value,labels},averageRunDuration{value,labels},medianRunDuration{value,labels}}}`,
 		"PrometheusExporter_WorkerStatus":     `query PrometheusExporter_WorkerStatus{workerPools{id,name,workers{busy,drained}}}`,
 		"PrometheusExporter_Queue":            `query PrometheusExporter_Queue($input:SearchInput!$total:SearchSuggestionsInput!){workerPools{id,name,searchSchedulableRuns(input:$input){edges{node{run{state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
+		"PrometheusExporter_PublicQueue":      `query PrometheusExporter_PublicQueue($input:SearchInput!$total:SearchSuggestionsInput!){publicWorkerPool{searchSchedulableRuns(input:$input){edges{node{run{state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
 	}
 
 	seen := map[string]string{}
@@ -218,10 +219,12 @@ func TestQueryShape(t *testing.T) {
 
 	// The variables each document sends are part of its cost too, and are not
 	// visible in the document text. A document absent here sends none. The
-	// queue search asks for its runs oldest first, and for the total with no
-	// per-field suggestions. It sets no page size because the API ignores it.
+	// queue searches ask for their runs oldest first, and for the total with
+	// no per-field suggestions. They set no page size because the API ignores
+	// it.
 	expectedVariables := map[string]string{
-		"PrometheusExporter_Queue": `{"input":{"orderBy":[{"field":"createdAt","direction":"ASC"}]},"total":{"fields":[]}}`,
+		"PrometheusExporter_Queue":       `{"input":{"orderBy":[{"field":"createdAt","direction":"ASC"}]},"total":{"fields":[]}}`,
+		"PrometheusExporter_PublicQueue": `{"input":{"orderBy":[{"field":"createdAt","direction":"ASC"}]},"total":{"fields":[]}}`,
 	}
 	for operation, sent := range stub.recordedVariables() {
 		for _, got := range sent {
