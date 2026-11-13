@@ -19,9 +19,9 @@
         ],
         "searchSchedulableRuns": {
           "edges": [
-            { "node": { "run": { "state": "APPLYING", "type": "TRACKED" } } },
-            { "node": { "run": { "state": "PLANNING", "type": "PROPOSED" } } },
-            { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+            { "node": { "run": { "createdAt": 1752700000, "state": "APPLYING", "type": "TRACKED" } } },
+            { "node": { "run": { "createdAt": 1752700100, "state": "PLANNING", "type": "PROPOSED" } } },
+            { "node": { "run": { "createdAt": 1752700200, "state": "READY", "type": "TRACKED" } } }
           ],
           "pageInfo": { "hasNextPage": false }
         },

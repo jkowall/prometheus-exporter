@@ -38,7 +38,9 @@ type searchSuggestionsInput struct {
 func (searchSuggestionsInput) GetGraphQLType() string { return "SearchSuggestionsInput" }
 
 // queueVariables asks for the runs oldest first and for the total alone. The
-// order does not change complete counts.
+// order does not change complete counts or the oldest creation time. The order
+// of a truncated result has not been observed, so the oldest creation time is
+// not taken from one (see summarizeQueue).
 var queueVariables = map[string]any{
 	"input": searchInput{OrderBy: []searchQueryOrder{{Field: "createdAt", Direction: "ASC"}}},
 	"total": searchSuggestionsInput{Fields: []string{}},
@@ -56,8 +58,9 @@ type schedulableRuns struct {
 	Edges []struct {
 		Node struct {
 			Run struct {
-				State string `graphql:"state"`
-				Type  string `graphql:"type"`
+				CreatedAt int64  `graphql:"createdAt"`
+				State     string `graphql:"state"`
+				Type      string `graphql:"type"`
 			} `graphql:"run"`
 		} `graphql:"node"`
 	} `graphql:"edges"`
@@ -80,12 +83,19 @@ type queueSummary struct {
 	// counts holds one entry per state and type returned, sorted by both.
 	counts []runCount
 
+	// oldest is the earliest creation time returned, or nil when the search
+	// returned no runs or only some of them.
+	oldest *int64
+
 	truncated bool
 }
 
 // summarizeQueue counts the runs the search returned by state and type, and
 // judges them against total, the number the search matched. Fewer returned
-// than matched, or a next page, means the counts are partial.
+// than matched, or a next page, means the counts are partial. The oldest
+// creation time is then withheld: the runs are requested oldest first, but
+// the order of a truncated result has not been observed, so the oldest
+// creation time is not taken from one.
 //
 // The search and the total are separate fields of one request, and nothing
 // says they are read at the same instant. Runs starting or finishing between
@@ -93,11 +103,17 @@ type queueSummary struct {
 // complete, for that scrape.
 func summarizeQueue(runs schedulableRuns, total int) queueSummary {
 	counts := map[runKey]int{}
+	var summary queueSummary
+
 	for _, edge := range runs.Edges {
-		counts[runKey{state: edge.Node.Run.State, runType: edge.Node.Run.Type}]++
+		run := edge.Node.Run
+		counts[runKey{state: run.State, runType: run.Type}]++
+
+		if summary.oldest == nil || run.CreatedAt < *summary.oldest {
+			summary.oldest = &run.CreatedAt
+		}
 	}
 
-	var summary queueSummary
 	for key, count := range counts {
 		summary.counts = append(summary.counts, runCount{runKey: key, count: count})
 	}
@@ -106,13 +122,16 @@ func summarizeQueue(runs schedulableRuns, total int) queueSummary {
 	})
 
 	summary.truncated = runs.PageInfo.HasNextPage || len(runs.Edges) < total
+	if summary.truncated {
+		summary.oldest = nil
+	}
 
 	return summary
 }
 
 // queueDescs are the descriptors one pool's queue reports.
 type queueDescs struct {
-	runs, truncated *prometheus.Desc
+	runs, oldest, truncated *prometheus.Desc
 }
 
 func newQueueDescs(prefix, pool string, labels []string) queueDescs {
@@ -122,9 +141,14 @@ func newQueueDescs(prefix, pool string, labels []string) queueDescs {
 			"The number of runs waiting for or executing on a worker in "+pool+", by the run's state and type; partial when "+prefix+"_schedulable_runs_truncated is 1",
 			append(slices.Clone(labels), "state", "type"),
 			nil),
+		oldest: prometheus.NewDesc(
+			prefix+"_oldest_schedulable_run_created_timestamp_seconds",
+			"The Unix creation time of the oldest run waiting for or executing on a worker in "+pool+", absent when there is none or when the search returned only some of them",
+			labels,
+			nil),
 		truncated: prometheus.NewDesc(
 			prefix+"_schedulable_runs_truncated",
-			"Whether the search returned only some of the schedulable runs in "+pool+" (1), so the by-state counts are partial, or all of them (0)",
+			"Whether the search returned only some of the schedulable runs in "+pool+" (1), so the by-state counts are partial and the oldest-run time is withheld, or all of them (0)",
 			labels,
 			nil),
 	}
@@ -132,16 +156,21 @@ func newQueueDescs(prefix, pool string, labels []string) queueDescs {
 
 func (d queueDescs) describe(ch chan<- *prometheus.Desc) {
 	ch <- d.runs
+	ch <- d.oldest
 	ch <- d.truncated
 }
 
 func (d queueDescs) metrics(runs schedulableRuns, total int, labelValues ...string) []prometheus.Metric {
 	summary := summarizeQueue(runs, total)
-	out := make([]prometheus.Metric, 0, len(summary.counts)+1)
+	out := make([]prometheus.Metric, 0, len(summary.counts)+2)
 
 	for _, c := range summary.counts {
 		out = append(out, prometheus.MustNewConstMetric(
 			d.runs, prometheus.GaugeValue, float64(c.count), append(slices.Clone(labelValues), c.state, c.runType)...))
+	}
+
+	if summary.oldest != nil {
+		out = append(out, prometheus.MustNewConstMetric(d.oldest, prometheus.GaugeValue, float64(*summary.oldest), labelValues...))
 	}
 
 	return append(out, prometheus.MustNewConstMetric(d.truncated, prometheus.GaugeValue, boolValue(summary.truncated), labelValues...))

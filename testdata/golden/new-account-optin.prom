@@ -1,7 +1,7 @@
-# HELP spacelift_public_worker_pool_schedulable_runs_truncated Whether the search returned only some of the schedulable runs in the public worker pool for this account (1), so the by-state counts are partial, or all of them (0)
+# HELP spacelift_public_worker_pool_schedulable_runs_truncated Whether the search returned only some of the schedulable runs in the public worker pool for this account (1), so the by-state counts are partial and the oldest-run time is withheld, or all of them (0)
 # TYPE spacelift_public_worker_pool_schedulable_runs_truncated gauge
 spacelift_public_worker_pool_schedulable_runs_truncated 0
-# HELP spacelift_worker_pool_schedulable_runs_truncated Whether the search returned only some of the schedulable runs in a worker pool (1), so the by-state counts are partial, or all of them (0)
+# HELP spacelift_worker_pool_schedulable_runs_truncated Whether the search returned only some of the schedulable runs in a worker pool (1), so the by-state counts are partial and the oldest-run time is withheld, or all of them (0)
 # TYPE spacelift_worker_pool_schedulable_runs_truncated gauge
 spacelift_worker_pool_schedulable_runs_truncated{worker_pool_id="01HQZXE1B2C3D4E5F6G7H8J9K0",worker_pool_name="first-pool"} 0
 # HELP spacelift_worker_pool_workers_by_status The number of workers in a worker pool by status: idle, busy, draining (drained and busy) or drained (drained and idle). draining plus drained normally equals spacelift_worker_pool_workers_drained (each from a separate request). busy plus draining equals spacelift_worker_pool_workers_busy when the API's busyWorkers count matches the workers' busy flags: that series comes from the pool's busyWorkers field and not from the worker list
