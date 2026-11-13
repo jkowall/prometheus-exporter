@@ -30,6 +30,7 @@ var collectorSpecs = []collectorSpec{
 	{name: "aggregates", defaultEnabled: true, build: collector.NewAggregates},
 	{name: "workerstatus", defaultEnabled: false, build: collector.NewWorkerStatus},
 	{name: "queue", defaultEnabled: false, build: collector.NewQueue},
+	{name: "publicqueue", defaultEnabled: false, build: collector.NewPublicQueue},
 }
 
 // newCollectors builds the enabled collectors. A collector absent from enabled

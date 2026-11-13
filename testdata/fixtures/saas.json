@@ -3,7 +3,15 @@
     "publicWorkerPool": {
       "parallelism": 10,
       "busyWorkers": 3,
-      "pendingRuns": 2
+      "pendingRuns": 2,
+      "searchSchedulableRuns": {
+        "edges": [
+          { "node": { "run": { "state": "INITIALIZING", "type": "PROPOSED" } } },
+          { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+        ],
+        "pageInfo": { "hasNextPage": false }
+      },
+      "searchSchedulableRunsSuggestions": { "filteredCount": 2 }
     },
     "workerPools": [
       {

@@ -124,7 +124,7 @@ func newQueueDescs(prefix, pool string, labels []string) queueDescs {
 			nil),
 		truncated: prometheus.NewDesc(
 			prefix+"_schedulable_runs_truncated",
-			"Whether the search returned only some of "+pool+"'s schedulable runs (1), so the by-state counts are partial, or all of them (0)",
+			"Whether the search returned only some of the schedulable runs in "+pool+" (1), so the by-state counts are partial, or all of them (0)",
 			labels,
 			nil),
 	}
@@ -164,11 +164,12 @@ func (c *queue) Name() string { return "queue" }
 
 func (c *queue) Describe(ch chan<- *prometheus.Desc) { c.descs.describe(ch) }
 
-// VersionGatedFields declares the search fields, which an older backend's
-// schema may lack.
-func (c *queue) VersionGatedFields() []string {
-	return []string{"searchSchedulableRuns", "searchSchedulableRunsSuggestions"}
-}
+// searchFields are the search fields queue and publicQueue select, which an
+// older backend's schema may lack. Both declare them version-gated.
+var searchFields = []string{"searchSchedulableRuns", "searchSchedulableRunsSuggestions"}
+
+// VersionGatedFields declares the search fields.
+func (c *queue) VersionGatedFields() []string { return slices.Clone(searchFields) }
 
 type queueQuery struct {
 	WorkerPools []struct {
@@ -199,4 +200,45 @@ func (c *queue) Collect(ctx context.Context, api client.Client) ([]prometheus.Me
 	}
 
 	return metrics, nil
+}
+
+// publicQueue collects the account's schedulable runs on the public worker
+// pool, with the same search and count as queue.
+type publicQueue struct {
+	descs queueDescs
+}
+
+// NewPublicQueue returns the public worker pool queue collector.
+func NewPublicQueue() Collector {
+	return &publicQueue{descs: newQueueDescs("spacelift_public_worker_pool", "the public worker pool for this account", nil)}
+}
+
+func (c *publicQueue) Name() string { return "publicqueue" }
+
+func (c *publicQueue) Describe(ch chan<- *prometheus.Desc) { c.descs.describe(ch) }
+
+// VersionGatedFields declares the same search fields as queue does.
+func (c *publicQueue) VersionGatedFields() []string { return slices.Clone(searchFields) }
+
+type publicQueueQuery struct {
+	PublicWorkerPool *struct {
+		SearchSchedulableRuns *schedulableRuns      `graphql:"searchSchedulableRuns(input:$input)"`
+		Total                 *schedulableRunsTotal `graphql:"searchSchedulableRunsSuggestions(input:$total)"`
+	} `graphql:"publicWorkerPool"`
+}
+
+func (c *publicQueue) Collect(ctx context.Context, api client.Client) ([]prometheus.Metric, error) {
+	var query publicQueueQuery
+	if err := api.QueryNamed(ctx, &query, queueVariables, "PublicQueue"); err != nil {
+		return nil, err
+	}
+
+	// The pool is nullable as well as its search and total. As for a private
+	// pool, a null without an error reports nothing.
+	pool := query.PublicWorkerPool
+	if pool == nil || pool.SearchSchedulableRuns == nil || pool.Total == nil {
+		return nil, nil
+	}
+
+	return c.descs.metrics(*pool.SearchSchedulableRuns, pool.Total.FilteredCount), nil
 }

@@ -173,6 +173,7 @@ OPTIONS:
    --[no-]collector.aggregates       Enable the aggregates collector (default: true) [$SPACELIFT_PROMEX_COLLECTOR_AGGREGATES]
    --[no-]collector.workerstatus     Enable the workerstatus collector (default: false) [$SPACELIFT_PROMEX_COLLECTOR_WORKERSTATUS]
    --[no-]collector.queue            Enable the queue collector (default: false) [$SPACELIFT_PROMEX_COLLECTOR_QUEUE]
+   --[no-]collector.publicqueue      Enable the publicqueue collector (default: false) [$SPACELIFT_PROMEX_COLLECTOR_PUBLICQUEUE]
 ```
 
 ## Version
@@ -235,6 +236,7 @@ What each collector serves:
 | `aggregates`       | Account-wide stack counts by state, resource drift, average stack size and run-duration stats |
 | `workerstatus`     | Opt-in: per-pool worker counts by status, listing every worker again                          |
 | `queue`            | Opt-in: per-pool schedulable runs by state and type, with a search and a count per pool       |
+| `publicqueue`      | Opt-in: the account's schedulable runs on the public worker pool by state and type            |
 
 Worker pool and stack-state series change as runs are queued, start and finish. How stale each
 collector can be depends on what you alert or scale on: scrape it as often as its most
@@ -300,6 +302,7 @@ lists. Enable them one at a time and watch
 | -------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `workerstatus` | `--collector.workerstatus` | A second `workerPools` request that lists every worker of every pool, as `workerpools` does; 4 series per private pool |
 | `queue`        | `--collector.queue`        | Another `workerPools` request, with a search and a count of schedulable runs per pool; series per pool, state and type |
+| `publicqueue`  | `--collector.publicqueue`  | A `publicWorkerPool` request with the same search and count for the public pool; series per state and type             |
 
 Run opt-in collectors with `--partial-scrapes`. Every collector shares one `--scrape-timeout`
 deadline, and in the default strict mode one collector that fails, is unsupported or runs out of
@@ -307,11 +310,13 @@ time fails the whole scrape, taking the default metrics down with it. With parti
 only its own series, and its `spacelift_scrape_collector_success` or
 `spacelift_scrape_collector_supported` series says so.
 
-| Metric                                             | Collector      | Labels                                                | Description                                                                                                                                  |
-| -------------------------------------------------- | -------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spacelift_worker_pool_workers_by_status`          | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status`        | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle)                                             |
-| `spacelift_worker_pool_schedulable_runs`           | `queue`        | `worker_pool_id`, `worker_pool_name`, `state`, `type` | Runs waiting for or executing on a worker, by the run's state and type; partial when `spacelift_worker_pool_schedulable_runs_truncated` is 1 |
-| `spacelift_worker_pool_schedulable_runs_truncated` | `queue`        | `worker_pool_id`, `worker_pool_name`                  | 1 when the search returned only some of the pool's schedulable runs, 0 when it returned all of them                                          |
+| Metric                                                    | Collector      | Labels                                                | Description                                                                                                                                  |
+| --------------------------------------------------------- | -------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spacelift_worker_pool_workers_by_status`                 | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status`        | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle)                                             |
+| `spacelift_worker_pool_schedulable_runs`                  | `queue`        | `worker_pool_id`, `worker_pool_name`, `state`, `type` | Runs waiting for or executing on a worker, by the run's state and type; partial when `spacelift_worker_pool_schedulable_runs_truncated` is 1 |
+| `spacelift_worker_pool_schedulable_runs_truncated`        | `queue`        | `worker_pool_id`, `worker_pool_name`                  | 1 when the search returned only some of the pool's schedulable runs, 0 when it returned all of them                                          |
+| `spacelift_public_worker_pool_schedulable_runs`           | `publicqueue`  | `state`, `type`                                       | As `spacelift_worker_pool_schedulable_runs`, for the account's runs on the public worker pool                                                |
+| `spacelift_public_worker_pool_schedulable_runs_truncated` | `publicqueue`  |                                                       | As `spacelift_worker_pool_schedulable_runs_truncated`, for the public worker pool                                                            |
 
 `spacelift_worker_pool_workers_by_status` breaks the default pool series down by status.
 `draining` plus `drained` normally equals `spacelift_worker_pool_workers_drained`, and the four
@@ -329,7 +334,11 @@ spacelift_worker_pool_workers_by_status{status="draining"} > 0
 The `queue` collector reports each private pool's *schedulable* runs: runs waiting for a worker and
 runs a worker is executing. The `state` label is the run's state and `type` its type. This is not
 the same set as `spacelift_worker_pool_runs_pending`, which counts only waiting runs. Use
-`runs_pending` for the waiting total and `queue` for the breakdown.
+`runs_pending` for the waiting total and `queue` for the breakdown. The `publicqueue` collector does
+the same for the account's runs on the public worker pool, next to
+`spacelift_public_worker_pool_runs_pending`. The search, its total and the two limits below apply
+to both collectors; the public pool's flag is
+`spacelift_public_worker_pool_schedulable_runs_truncated`.
 
 The search ignores `first` and reports `hasNextPage` false regardless, so the collector also asks
 for the search's total (`searchSchedulableRunsSuggestions.filteredCount`) and compares. When fewer
@@ -344,11 +353,12 @@ Two limits apply:
 - That `filteredCount` counts every matched run has only been observed on small queues. If it
   undercounted, a partial result would read as complete.
 
-The collector is one request, so an error in any pool's search fails it for every pool on that
-scrape, as any error does for `workerpools`. A pool whose search or total comes back null without
-an error reports no queue series. On a backend whose schema lacks the search fields, `queue` is
-unsupported: with `--partial-scrapes` it reports `spacelift_scrape_collector_supported` 0, and in
-strict mode it fails the scrape like any other error.
+The `queue` collector is one request, so an error in any pool's search fails it for every pool on
+that scrape, as any error does for `workerpools`. A pool whose search or total comes back null
+without an error reports no queue series, and so does a null public pool. On a backend whose schema
+lacks the search fields, `queue` and `publicqueue` are unsupported: with `--partial-scrapes` they
+report `spacelift_scrape_collector_supported` 0, and in strict mode they fail the scrape like any
+other error.
 
 ## Example Dashboard
 
