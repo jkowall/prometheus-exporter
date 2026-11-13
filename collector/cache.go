@@ -56,17 +56,19 @@ type cachingCollector struct {
 	entry *cacheEntry
 }
 
-// cacheEntry is the outcome of one API request and how long it may be served.
+// cacheEntry is the outcome of one API request, how long the request took and
+// how long the outcome may be served.
 type cacheEntry struct {
 	metrics   []prometheus.Metric
 	err       error
+	duration  time.Duration
 	fetchedAt time.Time
 	ttl       time.Duration
 }
 
 // Collect implements Collector.
 func (c *cachingCollector) Collect(ctx context.Context, api client.Client) ([]prometheus.Metric, error) {
-	entry := c.collectCached(ctx, api)
+	entry, _ := c.collectCached(ctx, api)
 
 	return entry.metrics, entry.err
 }
@@ -84,7 +86,8 @@ func (c *cachingCollector) VersionGatedFields() []string {
 }
 
 // collectCached returns the cached outcome while it is fresh and queries the
-// API otherwise.
+// API otherwise, along with the age of the outcome served: 0 when this call
+// issued the request, otherwise the time since the request was issued.
 //
 // A success or an unsupported result is kept for the full TTL. Any other
 // error is kept for at most errorTTL, and not at all when the scrape's own
@@ -95,25 +98,28 @@ func (c *cachingCollector) VersionGatedFields() []string {
 //
 // The unsupported check classifies against the wrapped collector, so the
 // fields it declares through VersionGated are honoured.
-func (c *cachingCollector) collectCached(ctx context.Context, api client.Client) cacheEntry {
+func (c *cachingCollector) collectCached(ctx context.Context, api client.Client) (cacheEntry, time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.entry != nil && c.now().Sub(c.entry.fetchedAt) < c.entry.ttl {
-		return *c.entry
+	if c.entry != nil {
+		if age := c.now().Sub(c.entry.fetchedAt); age < c.entry.ttl {
+			return *c.entry, age
+		}
 	}
 
 	entry := cacheEntry{fetchedAt: c.now(), ttl: c.ttl}
 	entry.metrics, entry.err = c.request(ctx, api)
+	entry.duration = c.now().Sub(entry.fetchedAt)
 	if entry.err != nil && !errors.Is(classify(c.Collector, entry.err), ErrNotSupported) {
 		if ctx.Err() != nil {
-			return entry
+			return entry, 0
 		}
 		entry.ttl = min(c.ttl, errorTTL)
 	}
 	c.entry = &entry
 
-	return entry
+	return entry, 0
 }
 
 // request runs the wrapped collector once, turning a panic into an error so

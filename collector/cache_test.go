@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.uber.org/zap"
 )
 
 // countingCollector counts its requests and answers each one with err.
@@ -161,6 +163,46 @@ type gatedTestCollector struct {
 
 func (c gatedTestCollector) VersionGatedFields() []string { return c.fields }
 
+// TestCachedVersionGatedCollectorReportsUnsupported checks the exporter's view
+// of a cached collector whose declared field is missing: supported 0 and
+// success 1 on the scrape that issued the request and on a scrape served from
+// cache just before the TTL ends, with one request between them.
+func TestCachedVersionGatedCollectorReportsUnsupported(t *testing.T) {
+	at := time.Unix(0, 0)
+	inner, requests := countingCollector(apiErrors(`Cannot query field "searchSchedulableRuns" on type "Query".`))
+	gated := cached(gatedTestCollector{inner, []string{"searchSchedulableRuns"}}, time.Hour, &at)
+	healthy, _ := countingCollector(nil)
+	healthy.name = "healthy"
+	exporter := New(context.Background(), zap.NewNop().Sugar(), nil, time.Second, BuildInfo{},
+		[]Collector{gated, healthy}, true)
+
+	const want = `# HELP spacelift_scrape_collector_success Whether a collector succeeded on the last scrape (1) or failed (0).
+# TYPE spacelift_scrape_collector_success gauge
+spacelift_scrape_collector_success{collector="counted"} 1
+spacelift_scrape_collector_success{collector="healthy"} 1
+# HELP spacelift_scrape_collector_supported Whether a collector's data is available on this deployment, tier and API key (1) or not (0). An unsupported collector is not a failure.
+# TYPE spacelift_scrape_collector_supported gauge
+spacelift_scrape_collector_supported{collector="counted"} 0
+spacelift_scrape_collector_supported{collector="healthy"} 1
+`
+	for _, scrape := range []struct {
+		name string
+		wait time.Duration
+	}{
+		{"fresh scrape", 0},
+		{"cached scrape", time.Hour - time.Nanosecond},
+	} {
+		at = at.Add(scrape.wait)
+		if err := testutil.CollectAndCompare(exporter, strings.NewReader(want),
+			"spacelift_scrape_collector_success", "spacelift_scrape_collector_supported"); err != nil {
+			t.Errorf("%s: %v", scrape.name, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("two scrapes within the TTL issued %d requests, want 1", got)
+	}
+}
+
 // TestCacheIgnoresTheCallersDeadline keeps one scrape's expired deadline from
 // failing the scrapes after it.
 func TestCacheIgnoresTheCallersDeadline(t *testing.T) {
@@ -241,5 +283,58 @@ func TestCacheIsSingleFlight(t *testing.T) {
 
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("%d concurrent scrapes issued %d requests, want 1", scrapers, got)
+	}
+}
+
+// TestCachedScrapeReportsTruthfulHealth checks that a scrape served from cache
+// reports the duration of the request that produced its result, not of the
+// cache hit, and how old that result is. A collector that panics is cached as
+// a failure and keeps its cache age series.
+func TestCachedScrapeReportsTruthfulHealth(t *testing.T) {
+	at, panicAt := time.Unix(0, 0), time.Unix(0, 0)
+	var requests atomic.Int32
+	var counted *testCollector
+	counted = newTestCollector("counted", func(context.Context) ([]prometheus.Metric, error) {
+		requests.Add(1)
+		at = at.Add(2 * time.Second)
+
+		return []prometheus.Metric{prometheus.MustNewConstMetric(counted.desc, prometheus.GaugeValue, 1)}, nil
+	})
+	panicky := newTestCollector("panicky", func(context.Context) ([]prometheus.Metric, error) { panic("boom") })
+	exporter := New(context.Background(), zap.NewNop().Sugar(), nil, time.Second, BuildInfo{},
+		[]Collector{cached(counted, time.Minute, &at), cached(panicky, time.Minute, &panicAt)}, true)
+
+	const want = `# HELP spacelift_scrape_collector_cache_age_seconds Age of the result a cached collector served on the last scrape: 0 when that scrape issued the request, otherwise the time since the request was issued. Only reported for collectors with a cache TTL. For such a collector, spacelift_scrape_collector_duration_seconds reports the duration of the request that produced the served result.
+# TYPE spacelift_scrape_collector_cache_age_seconds gauge
+spacelift_scrape_collector_cache_age_seconds{collector="counted"} %d
+spacelift_scrape_collector_cache_age_seconds{collector="panicky"} %d
+# HELP spacelift_scrape_collector_duration_seconds Duration of a collector's Spacelift API request on the last scrape.
+# TYPE spacelift_scrape_collector_duration_seconds gauge
+spacelift_scrape_collector_duration_seconds{collector="counted"} 2
+spacelift_scrape_collector_duration_seconds{collector="panicky"} 0
+# HELP spacelift_scrape_collector_success Whether a collector succeeded on the last scrape (1) or failed (0).
+# TYPE spacelift_scrape_collector_success gauge
+spacelift_scrape_collector_success{collector="counted"} 1
+spacelift_scrape_collector_success{collector="panicky"} 0
+`
+	for _, scrape := range []struct {
+		name                 string
+		wait                 time.Duration
+		countedAge, panicAge int
+	}{
+		{"fresh scrape", 0, 0, 0},
+		{"cached scrape", 20 * time.Second, 22, 20}, // counted: 2s request + 20s since
+	} {
+		at, panicAt = at.Add(scrape.wait), panicAt.Add(scrape.wait)
+		expected := fmt.Sprintf(want, scrape.countedAge, scrape.panicAge)
+		if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected),
+			"spacelift_scrape_collector_cache_age_seconds",
+			"spacelift_scrape_collector_duration_seconds",
+			"spacelift_scrape_collector_success"); err != nil {
+			t.Errorf("%s: %v", scrape.name, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("two scrapes within the TTL issued %d requests, want 1", got)
 	}
 }
