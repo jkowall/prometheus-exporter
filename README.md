@@ -235,8 +235,8 @@ What each collector serves:
 | `usage`            | Billing-period start, end and usage counters                                                  |
 | `aggregates`       | Account-wide stack counts by state, resource drift, average stack size and run-duration stats |
 | `workerstatus`     | Opt-in: per-pool worker counts by status, listing every worker again                          |
-| `queue`            | Opt-in: per-pool schedulable runs by state and type, with a search and a count per pool       |
-| `publicqueue`      | Opt-in: the account's schedulable runs on the public worker pool by state and type            |
+| `queue`            | Opt-in: per-pool schedulable runs by state and type, and the oldest one's creation time       |
+| `publicqueue`      | Opt-in: the same for the account's runs on the public worker pool, in its own request         |
 
 Worker pool and stack-state series change as runs are queued, start and finish. How stale each
 collector can be depends on what you alert or scale on: scrape it as often as its most
@@ -310,13 +310,15 @@ time fails the whole scrape, taking the default metrics down with it. With parti
 only its own series, and its `spacelift_scrape_collector_success` or
 `spacelift_scrape_collector_supported` series says so.
 
-| Metric                                                    | Collector      | Labels                                                | Description                                                                                                                                  |
-| --------------------------------------------------------- | -------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spacelift_worker_pool_workers_by_status`                 | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status`        | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle)                                             |
-| `spacelift_worker_pool_schedulable_runs`                  | `queue`        | `worker_pool_id`, `worker_pool_name`, `state`, `type` | Runs waiting for or executing on a worker, by the run's state and type; partial when `spacelift_worker_pool_schedulable_runs_truncated` is 1 |
-| `spacelift_worker_pool_schedulable_runs_truncated`        | `queue`        | `worker_pool_id`, `worker_pool_name`                  | 1 when the search returned only some of the pool's schedulable runs, 0 when it returned all of them                                          |
-| `spacelift_public_worker_pool_schedulable_runs`           | `publicqueue`  | `state`, `type`                                       | As `spacelift_worker_pool_schedulable_runs`, for the account's runs on the public worker pool                                                |
-| `spacelift_public_worker_pool_schedulable_runs_truncated` | `publicqueue`  |                                                       | As `spacelift_worker_pool_schedulable_runs_truncated`, for the public worker pool                                                            |
+| Metric                                                                          | Collector      | Labels                                                | Description                                                                                                                                  |
+| ------------------------------------------------------------------------------- | -------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spacelift_worker_pool_workers_by_status`                                       | `workerstatus` | `worker_pool_id`, `worker_pool_name`, `status`        | Workers by status: `idle`, `busy`, `draining` (drained and busy) or `drained` (drained and idle)                                             |
+| `spacelift_worker_pool_schedulable_runs`                                        | `queue`        | `worker_pool_id`, `worker_pool_name`, `state`, `type` | Runs waiting for or executing on a worker, by the run's state and type; partial when `spacelift_worker_pool_schedulable_runs_truncated` is 1 |
+| `spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds`        | `queue`        | `worker_pool_id`, `worker_pool_name`                  | Creation time of the oldest such run; absent when there is none or when `spacelift_worker_pool_schedulable_runs_truncated` is 1              |
+| `spacelift_worker_pool_schedulable_runs_truncated`                              | `queue`        | `worker_pool_id`, `worker_pool_name`                  | 1 when the search returned only some of the pool's schedulable runs, 0 when it returned all of them                                          |
+| `spacelift_public_worker_pool_schedulable_runs`                                 | `publicqueue`  | `state`, `type`                                       | As `spacelift_worker_pool_schedulable_runs`, for the account's runs on the public worker pool                                                |
+| `spacelift_public_worker_pool_oldest_schedulable_run_created_timestamp_seconds` | `publicqueue`  |                                                       | As `spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds`, for the public worker pool                                      |
+| `spacelift_public_worker_pool_schedulable_runs_truncated`                       | `publicqueue`  |                                                       | As `spacelift_worker_pool_schedulable_runs_truncated`, for the public worker pool                                                            |
 
 `spacelift_worker_pool_workers_by_status` breaks the default pool series down by status.
 `draining` plus `drained` normally equals `spacelift_worker_pool_workers_drained`, and the four
@@ -334,24 +336,38 @@ spacelift_worker_pool_workers_by_status{status="draining"} > 0
 The `queue` collector reports each private pool's *schedulable* runs: runs waiting for a worker and
 runs a worker is executing. The `state` label is the run's state and `type` its type. This is not
 the same set as `spacelift_worker_pool_runs_pending`, which counts only waiting runs. Use
-`runs_pending` for the waiting total and `queue` for the breakdown. The `publicqueue` collector does
-the same for the account's runs on the public worker pool, next to
-`spacelift_public_worker_pool_runs_pending`. The search, its total and the two limits below apply
-to both collectors; the public pool's flag is
+`runs_pending` for the waiting total and `queue` for the breakdown and the oldest creation time.
+The `publicqueue` collector does the same for the account's runs on the public worker pool, next
+to `spacelift_public_worker_pool_runs_pending`. The search, its total and the three limits below
+apply to both collectors; the public pool's flag is
 `spacelift_public_worker_pool_schedulable_runs_truncated`.
 
 The search ignores `first` and reports `hasNextPage` false regardless, so the collector also asks
 for the search's total (`searchSchedulableRunsSuggestions.filteredCount`) and compares. When fewer
-runs come back than it matched, `spacelift_worker_pool_schedulable_runs_truncated` is 1 and the
-counts are partial. Otherwise they cover every schedulable run.
+runs come back than it matched, `spacelift_worker_pool_schedulable_runs_truncated` is 1, the counts
+are partial, and the oldest-run timestamp is withheld: the runs are requested oldest first, but the
+order of a truncated result has not been observed, so the oldest creation time is not taken from
+one. Otherwise the counts and the timestamp cover every schedulable run.
 
-Two limits apply:
+Three limits apply:
 
 - The runs and the total are separate fields of one request, and nothing says they are read at the
   same instant. Runs starting or finishing between them can make a complete result read as
-  truncated, or a partial one read as complete, for that scrape.
+  truncated, or a partial one read as complete, for that scrape. A complete result read as
+  truncated withholds the oldest-run time, so on a busy account that series can have gaps, and a
+  partial result read as complete can report a later time than the oldest run's.
 - That `filteredCount` counts every matched run has only been observed on small queues. If it
-  undercounted, a partial result would read as complete.
+  undercounted, a partial result would read as complete, with partial counts and possibly a
+  too-recent oldest-run time.
+- The oldest-run time is the creation time of the oldest schedulable run, executing runs included.
+  It is not how long anything has waited for a worker: a long apply keeps it old. Alert on
+  `runs_pending` for waiting runs, and use this for runs that stay schedulable for a long time.
+
+```promql
+# Seconds since the oldest schedulable run, waiting or executing, was created, per pool.
+# Not a wait time: a run a worker is still executing counts too.
+time() - spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds
+```
 
 The `queue` collector is one request, so an error in any pool's search fails it for every pool on
 that scrape, as any error does for `workerpools`. A pool whose search or total comes back null

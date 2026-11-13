@@ -80,6 +80,8 @@ func TestNewAccountAllCollectors(t *testing.T) {
 		"spacelift_current_stacks_count_by_state{",
 		"spacelift_worker_pool_schedulable_runs{",
 		"spacelift_public_worker_pool_schedulable_runs{",
+		"spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds{",
+		"spacelift_public_worker_pool_oldest_schedulable_run_created_timestamp_seconds ",
 	}
 	for _, series := range absent {
 		if strings.Contains(output, series) {

@@ -6,8 +6,8 @@
       "pendingRuns": 2,
       "searchSchedulableRuns": {
         "edges": [
-          { "node": { "run": { "state": "INITIALIZING", "type": "PROPOSED" } } },
-          { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+          { "node": { "run": { "createdAt": 1752700500, "state": "INITIALIZING", "type": "PROPOSED" } } },
+          { "node": { "run": { "createdAt": 1752700600, "state": "READY", "type": "TRACKED" } } }
         ],
         "pageInfo": { "hasNextPage": false }
       },
@@ -29,10 +29,10 @@
         ],
         "searchSchedulableRuns": {
           "edges": [
-            { "node": { "run": { "state": "PLANNING", "type": "TRACKED" } } },
-            { "node": { "run": { "state": "READY", "type": "PROPOSED" } } },
-            { "node": { "run": { "state": "READY", "type": "PROPOSED" } } },
-            { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+            { "node": { "run": { "createdAt": 1752700000, "state": "PLANNING", "type": "TRACKED" } } },
+            { "node": { "run": { "createdAt": 1752700100, "state": "READY", "type": "PROPOSED" } } },
+            { "node": { "run": { "createdAt": 1752700200, "state": "READY", "type": "PROPOSED" } } },
+            { "node": { "run": { "createdAt": 1752700300, "state": "READY", "type": "TRACKED" } } }
           ],
           "pageInfo": { "hasNextPage": false }
         },
@@ -50,7 +50,7 @@
         ],
         "searchSchedulableRuns": {
           "edges": [
-            { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+            { "node": { "run": { "createdAt": 1752700400, "state": "READY", "type": "TRACKED" } } }
           ],
           "pageInfo": { "hasNextPage": false }
         },

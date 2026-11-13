@@ -23,10 +23,11 @@ func TestQueueWithoutAnAnswer(t *testing.T) {
 			response: `{"data":{"workerPools":[` +
 				`{"id":"pool-unanswered","name":"unanswered","searchSchedulableRuns":null,"searchSchedulableRunsSuggestions":{"filteredCount":0}},` +
 				`{"id":"pool-uncounted","name":"uncounted","searchSchedulableRuns":{"edges":[],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":null},` +
-				`{"id":"pool-ok","name":"ok","searchSchedulableRuns":{"edges":[{"node":{"run":{"state":"READY","type":"TRACKED"}}}],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":{"filteredCount":1}}]}}`,
+				`{"id":"pool-ok","name":"ok","searchSchedulableRuns":{"edges":[{"node":{"run":{"createdAt":1752700000,"state":"READY","type":"TRACKED"}}}],"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":{"filteredCount":1}}]}}`,
 			present: []string{
 				`spacelift_scrape_collector_success{collector="queue"} 1`,
 				`spacelift_worker_pool_schedulable_runs{state="READY",type="TRACKED",worker_pool_id="pool-ok",worker_pool_name="ok"} 1`,
+				`spacelift_worker_pool_oldest_schedulable_run_created_timestamp_seconds{worker_pool_id="pool-ok",worker_pool_name="ok"} 1.7527e+09`,
 				`spacelift_worker_pool_schedulable_runs_truncated{worker_pool_id="pool-ok",worker_pool_name="ok"} 0`,
 			},
 			absent: []string{"pool-unanswered", "pool-uncounted"},
@@ -75,13 +76,14 @@ func TestQueueWithoutAnAnswer(t *testing.T) {
 }
 
 // TestPublicQueueTruncated pins that the public pool's total is read: two runs
-// returned of three matched must report truncated, which a total read as zero
-// would not. The fixtures' public pools are complete, so their goldens cannot
-// show this.
+// returned of three matched must report truncated and withhold the oldest-run
+// time, which a total read as zero would not. The fixtures' public pools are
+// complete, so their goldens cannot show this.
 func TestPublicQueueTruncated(t *testing.T) {
 	stub := newGraphQLStub(t, fixture(t, "saas"))
 	stub.failOperation("PrometheusExporter_PublicQueue", `{"data":{"publicWorkerPool":{"searchSchedulableRuns":{"edges":[`+
-		`{"node":{"run":{"state":"READY","type":"TRACKED"}}},{"node":{"run":{"state":"READY","type":"TRACKED"}}}],`+
+		`{"node":{"run":{"createdAt":1752700000,"state":"READY","type":"TRACKED"}}},`+
+		`{"node":{"run":{"createdAt":1752700100,"state":"READY","type":"TRACKED"}}}],`+
 		`"pageInfo":{"hasNextPage":false}},"searchSchedulableRunsSuggestions":{"filteredCount":3}}}}`)
 
 	output := gather(t, stub.allCollectors(t))
@@ -93,5 +95,9 @@ func TestPublicQueueTruncated(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q in:\n%s", want, output)
 		}
+	}
+
+	if strings.Contains(output, "spacelift_public_worker_pool_oldest_schedulable_run_created_timestamp_seconds ") {
+		t.Errorf("a truncated public pool still reports its oldest-run time:\n%s", output)
 	}
 }

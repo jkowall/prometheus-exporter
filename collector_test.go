@@ -197,8 +197,8 @@ func TestQueryShape(t *testing.T) {
 		"PrometheusExporter_Usage":            `query PrometheusExporter_Usage{usage{billingPeriodStart,billingPeriodEnd,usedPrivateMinutes,usedPublicMinutes,usedSeats}}`,
 		"PrometheusExporter_Aggregates":       `query PrometheusExporter_Aggregates{metrics{stacksCountByState{value,labels},resourcesCountByDrift{value,labels},avgStackSizeByResourceCount{value,labels},averageRunDuration{value,labels},medianRunDuration{value,labels}}}`,
 		"PrometheusExporter_WorkerStatus":     `query PrometheusExporter_WorkerStatus{workerPools{id,name,workers{busy,drained}}}`,
-		"PrometheusExporter_Queue":            `query PrometheusExporter_Queue($input:SearchInput!$total:SearchSuggestionsInput!){workerPools{id,name,searchSchedulableRuns(input:$input){edges{node{run{state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
-		"PrometheusExporter_PublicQueue":      `query PrometheusExporter_PublicQueue($input:SearchInput!$total:SearchSuggestionsInput!){publicWorkerPool{searchSchedulableRuns(input:$input){edges{node{run{state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
+		"PrometheusExporter_Queue":            `query PrometheusExporter_Queue($input:SearchInput!$total:SearchSuggestionsInput!){workerPools{id,name,searchSchedulableRuns(input:$input){edges{node{run{createdAt,state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
+		"PrometheusExporter_PublicQueue":      `query PrometheusExporter_PublicQueue($input:SearchInput!$total:SearchSuggestionsInput!){publicWorkerPool{searchSchedulableRuns(input:$input){edges{node{run{createdAt,state,type}}},pageInfo{hasNextPage}},searchSchedulableRunsSuggestions(input:$total){filteredCount}}}`,
 	}
 
 	seen := map[string]string{}
