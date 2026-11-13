@@ -64,6 +64,7 @@ func TestNewAccountAllCollectors(t *testing.T) {
 		`spacelift_worker_pool_workers{` + pool + `} 0`,
 		`spacelift_worker_pool_workers_busy{` + pool + `} 0`,
 		`spacelift_worker_pool_workers_drained{` + pool + `} 0`,
+		`spacelift_worker_pool_schedulable_runs_truncated{` + pool + `} 0`,
 	}
 	for _, status := range []string{"busy", "drained", "draining", "idle"} {
 		present = append(present, `spacelift_worker_pool_workers_by_status{status="`+status+`",`+pool+`} 0`)
@@ -76,6 +77,7 @@ func TestNewAccountAllCollectors(t *testing.T) {
 
 	absent := []string{
 		"spacelift_current_stacks_count_by_state{",
+		"spacelift_worker_pool_schedulable_runs{",
 	}
 	for _, series := range absent {
 		if strings.Contains(output, series) {
@@ -149,13 +151,21 @@ func TestOptInCollectorFailurePolicy(t *testing.T) {
 	// Every opt-in collector needs a row.
 	optIn := map[string]struct {
 		operation string
-		// missingField, on type onType, is a field the document selects;
-		// gated is whether the collector declares it in VersionGatedFields.
+		// missingFields, on type onType, are the fields the document selects
+		// that a schema lacking them reports, one error each; gated is
+		// whether the collector declares them all in VersionGatedFields.
 		// workerstatus declares none, so a schema without busy fails it.
-		missingField, onType string
-		gated                bool
+		missingFields []string
+		onType        string
+		gated         bool
 	}{
-		"workerstatus": {operation: "PrometheusExporter_WorkerStatus", missingField: "busy", onType: "Worker"},
+		"workerstatus": {operation: "PrometheusExporter_WorkerStatus", missingFields: []string{"busy"}, onType: "Worker"},
+		"queue": {
+			operation:     "PrometheusExporter_Queue",
+			missingFields: []string{"searchSchedulableRuns", "searchSchedulableRunsSuggestions"},
+			onType:        "WorkerPool",
+			gated:         true,
+		},
 	}
 
 	for _, spec := range collectorSpecs {
@@ -169,8 +179,12 @@ func TestOptInCollectorFailurePolicy(t *testing.T) {
 		}
 
 		// The shape the live API returns, with HTTP 200, for a document
-		// selecting a field its schema lacks.
-		missingField := fmt.Sprintf(`{"errors":[{"message":"Cannot query field \"%s\" on type \"%s\".","locations":[{"line":1,"column":1}]}]}`, row.missingField, row.onType)
+		// selecting fields its schema lacks: one error per field.
+		var missingErrors []string
+		for _, field := range row.missingFields {
+			missingErrors = append(missingErrors, fmt.Sprintf(`{"message":"Cannot query field \"%s\" on type \"%s\".","locations":[{"line":1,"column":1}]}`, field, row.onType))
+		}
+		missingField := `{"errors":[` + strings.Join(missingErrors, ",") + `]}`
 		missingSuccess, missingSupported := "0", "1"
 		if row.gated {
 			missingSuccess, missingSupported = "1", "0"

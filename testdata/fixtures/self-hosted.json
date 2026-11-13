@@ -14,7 +14,16 @@
         "workers": [
           { "id": "worker-1", "drained": false, "busy": true },
           { "id": "worker-2", "drained": false, "busy": true }
-        ]
+        ],
+        "searchSchedulableRuns": {
+          "edges": [
+            { "node": { "run": { "state": "APPLYING", "type": "TRACKED" } } },
+            { "node": { "run": { "state": "PLANNING", "type": "PROPOSED" } } },
+            { "node": { "run": { "state": "READY", "type": "TRACKED" } } }
+          ],
+          "pageInfo": { "hasNextPage": false }
+        },
+        "searchSchedulableRunsSuggestions": { "filteredCount": 3 }
       }
     ],
     "usage": {

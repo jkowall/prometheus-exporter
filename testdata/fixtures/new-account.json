@@ -11,7 +11,9 @@
         "name": "first-pool",
         "pendingRuns": 0,
         "busyWorkers": 0,
-        "workers": []
+        "workers": [],
+        "searchSchedulableRuns": { "edges": [], "pageInfo": { "hasNextPage": false } },
+        "searchSchedulableRunsSuggestions": { "filteredCount": 0 }
       }
     ],
     "usage": {

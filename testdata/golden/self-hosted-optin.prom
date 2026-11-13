@@ -1,3 +1,11 @@
+# HELP spacelift_worker_pool_schedulable_runs The number of runs waiting for or executing on a worker in a worker pool, by the run's state and type; partial when spacelift_worker_pool_schedulable_runs_truncated is 1
+# TYPE spacelift_worker_pool_schedulable_runs gauge
+spacelift_worker_pool_schedulable_runs{state="APPLYING",type="TRACKED",worker_pool_id="01HQZXB1B2C3D4E5F6G7H8J9K0",worker_pool_name="on-prem"} 1
+spacelift_worker_pool_schedulable_runs{state="PLANNING",type="PROPOSED",worker_pool_id="01HQZXB1B2C3D4E5F6G7H8J9K0",worker_pool_name="on-prem"} 1
+spacelift_worker_pool_schedulable_runs{state="READY",type="TRACKED",worker_pool_id="01HQZXB1B2C3D4E5F6G7H8J9K0",worker_pool_name="on-prem"} 1
+# HELP spacelift_worker_pool_schedulable_runs_truncated Whether the search returned only some of a worker pool's schedulable runs (1), so the by-state counts are partial, or all of them (0)
+# TYPE spacelift_worker_pool_schedulable_runs_truncated gauge
+spacelift_worker_pool_schedulable_runs_truncated{worker_pool_id="01HQZXB1B2C3D4E5F6G7H8J9K0",worker_pool_name="on-prem"} 0
 # HELP spacelift_worker_pool_workers_by_status The number of workers in a worker pool by status: idle, busy, draining (drained and busy) or drained (drained and idle). draining plus drained normally equals spacelift_worker_pool_workers_drained (each from a separate request). busy plus draining equals spacelift_worker_pool_workers_busy when the API's busyWorkers count matches the workers' busy flags: that series comes from the pool's busyWorkers field and not from the worker list
 # TYPE spacelift_worker_pool_workers_by_status gauge
 spacelift_worker_pool_workers_by_status{status="busy",worker_pool_id="01HQZXB1B2C3D4E5F6G7H8J9K0",worker_pool_name="on-prem"} 2
